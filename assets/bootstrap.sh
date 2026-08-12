@@ -16,11 +16,11 @@ fi
 
 # AL2023 Minimal already provides the curl command through curl-minimal. Asking
 # DNF for the full curl package conflicts with curl-minimal and aborts cloud-init.
-RUNTIME_PACKAGES=(jq nftables rsyslog amazon-ssm-agent)
+RUNTIME_PACKAGES=(jq nftables rsyslog amazon-ssm-agent libxcrypt openssl-libs pcre2 zlib)
 if [ '__ENABLE_CLOUDWATCH__' = 'true' ]; then
   RUNTIME_PACKAGES+=(amazon-cloudwatch-agent)
 fi
-dnf install -y "${RUNTIME_PACKAGES[@]}" gcc make openssl-devel pcre2-devel zlib-devel systemd-devel tar gzip
+dnf install -y "${RUNTIME_PACKAGES[@]}" tar gzip
 
 # Bring up the recovery path before the comparatively slow HAProxy source build.
 # A later bootstrap failure must not leave an otherwise-running instance outside
@@ -41,18 +41,70 @@ install -d -o root -g haproxy -m 0750 /etc/haproxy/tls
 HAPROXY_VERSION='__HAPROXY_VERSION__'
 HAPROXY_BRANCH="${HAPROXY_VERSION%.*}"
 HAPROXY_TARBALL="haproxy-${HAPROXY_VERSION}.tar.gz"
-curl --fail --silent --show-error --location \
-  "https://www.haproxy.org/download/${HAPROXY_BRANCH}/src/${HAPROXY_TARBALL}" \
-  --output "/tmp/${HAPROXY_TARBALL}"
-echo "__HAPROXY_SHA256__  /tmp/${HAPROXY_TARBALL}" | sha256sum --check --strict
-tar -xzf "/tmp/${HAPROXY_TARBALL}" -C /tmp
-make -C "/tmp/haproxy-${HAPROXY_VERSION}" -j1 \
-  TARGET=linux-glibc USE_OPENSSL=1 USE_PCRE2=1 USE_ZLIB=1 USE_SYSTEMD=1 USE_PROMEX=1
-make -C "/tmp/haproxy-${HAPROXY_VERSION}" install-bin PREFIX=/usr/local
-/usr/local/sbin/haproxy -vv | head -n 1
-rm -rf "/tmp/${HAPROXY_TARBALL}" "/tmp/haproxy-${HAPROXY_VERSION}"
-dnf remove -y gcc make openssl-devel pcre2-devel zlib-devel systemd-devel
-dnf clean all
+HAPROXY_ARTIFACT_BUCKET='__HAPROXY_ARTIFACT_BUCKET__'
+HAPROXY_ARTIFACT_SHA256_PATH='__HAPROXY_ARTIFACT_SHA256_PATH__'
+HAPROXY_ARTIFACT=/tmp/haproxy-artifact.tar.gz
+artifact_installed=false
+
+# The version-specific SSM value is the complete S3 object key: a lowercase
+# SHA-256 digest of the bundle. An absent, invalid, unavailable, or corrupt cache
+# entry safely falls back to the pinned source build below.
+artifact_sha256=$(aws ssm get-parameter --name "$HAPROXY_ARTIFACT_SHA256_PATH" \
+  --query Parameter.Value --output text 2>/dev/null || true)
+if [[ "$artifact_sha256" =~ ^[0-9a-f]{64}$ ]] && \
+   aws s3api get-object --bucket "$HAPROXY_ARTIFACT_BUCKET" \
+     --key "$artifact_sha256" "$HAPROXY_ARTIFACT" >/dev/null 2>&1 && \
+   echo "$artifact_sha256  $HAPROXY_ARTIFACT" | sha256sum --check --strict; then
+  artifact_members=$(tar -tzf "$HAPROXY_ARTIFACT")
+  if [ "$artifact_members" = 'usr/local/sbin/haproxy' ]; then
+    tar -xzf "$HAPROXY_ARTIFACT" -C /
+    chmod 0755 /usr/local/sbin/haproxy
+    artifact_installed=true
+    echo "Installed HAProxy ${HAPROXY_VERSION} artifact ${artifact_sha256}"
+  else
+    echo "Ignoring HAProxy artifact with unexpected members: ${artifact_members}" >&2
+  fi
+fi
+
+if [ "$artifact_installed" != true ]; then
+  dnf install -y gcc make binutils openssl-devel pcre2-devel zlib-devel
+  curl --fail --silent --show-error --location \
+    "https://www.haproxy.org/download/${HAPROXY_BRANCH}/src/${HAPROXY_TARBALL}" \
+    --output "/tmp/${HAPROXY_TARBALL}"
+  echo "__HAPROXY_SOURCE_SHA256__  /tmp/${HAPROXY_TARBALL}" | sha256sum --check --strict
+  tar -xzf "/tmp/${HAPROXY_TARBALL}" -C /tmp
+  make -C "/tmp/haproxy-${HAPROXY_VERSION}" -j1 \
+    TARGET=linux-glibc USE_OPENSSL=1 USE_PCRE2=1 USE_ZLIB=1 USE_PROMEX=1
+  make -C "/tmp/haproxy-${HAPROXY_VERSION}" install-bin PREFIX=/usr/local
+  strip /usr/local/sbin/haproxy
+
+  artifact_root=$(mktemp -d)
+  install -D -m 0755 /usr/local/sbin/haproxy \
+    "$artifact_root/usr/local/sbin/haproxy"
+  tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+    -C "$artifact_root" -cf - usr/local/sbin/haproxy | gzip -n -9 > "$HAPROXY_ARTIFACT"
+  artifact_sha256=$(sha256sum "$HAPROXY_ARTIFACT" | awk '{print $1}')
+
+  # Cache publication is best-effort: the verified local binary remains usable
+  # if S3 or SSM has a transient write failure.
+  if aws s3api put-object --bucket "$HAPROXY_ARTIFACT_BUCKET" \
+      --key "$artifact_sha256" --body "$HAPROXY_ARTIFACT" \
+      --checksum-algorithm SHA256 >/dev/null; then
+    aws ssm put-parameter --name "$HAPROXY_ARTIFACT_SHA256_PATH" \
+      --type String --value "$artifact_sha256" --overwrite >/dev/null || \
+      echo "HAProxy artifact uploaded but its SSM pointer could not be updated" >&2
+  else
+    echo "HAProxy artifact cache upload failed; continuing with the local binary" >&2
+  fi
+
+  rm -rf "/tmp/${HAPROXY_TARBALL}" "/tmp/haproxy-${HAPROXY_VERSION}" "$artifact_root"
+  dnf remove -y gcc make binutils openssl-devel pcre2-devel zlib-devel
+  dnf clean all
+fi
+
+# Do not pipe this through `head` under pipefail: HAProxy then receives SIGPIPE,
+# returns 141, and aborts the remainder of cloud-init despite a successful build.
+/usr/local/sbin/haproxy -vv
 
 cat > /etc/systemd/system/haproxy.service <<'UNIT'
 [Unit]

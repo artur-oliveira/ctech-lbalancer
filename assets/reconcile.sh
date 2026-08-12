@@ -135,7 +135,7 @@ for ((index=0; index<route_count; index++)); do
   printf '  use_backend route_%d if route_%d\n' "$index" "$index" >> "$new_config"
 done
 cat >> "$new_config" <<'HAPROXY'
-  http-request return status 421 content-type application/json string '{"message":"Unknown host"}'
+  default_backend unknown_host
 
 frontend local_stats
   bind 127.0.0.1:8404
@@ -143,13 +143,17 @@ frontend local_stats
   stats enable
   stats uri /stats
   stats refresh 10s
+
+backend unknown_host
+  http-request return status 421 content-type application/json string '{"message":"Unknown host"}'
 HAPROXY
 
 for ((index=0; index<route_count; index++)); do
   hostname=$(jq -r ".[${index}].hostname" <<<"$resolved")
   port=$(jq -r ".[${index}].port" <<<"$resolved")
   health_path=$(jq -r ".[${index}].healthPath" <<<"$resolved")
-  statuses=$(jq -r ".[${index}].healthyStatuses | map(tostring) | join("|")" <<<"$resolved")
+  statuses=$(jq -r --argjson index "$index" \
+    '.[$index].healthyStatuses | map(tostring) | join("|")' <<<"$resolved")
   cat >> "$new_config" <<HAPROXY
 
 backend route_${index}
@@ -233,18 +237,29 @@ if [ -n "$imds_token" ]; then
       cf_token=$(parameter '__CLOUDFLARE_TOKEN_PATH__' || true)
       if [ -n "$cf_token" ]; then
         api="https://api.cloudflare.com/client/v4/zones/__CLOUDFLARE_ZONE_ID__/dns_records"
-        record=$(curl --fail --silent --show-error -H "Authorization: Bearer ${cf_token}" \
-          "${api}?type=AAAA&name=__ORIGIN_DOMAIN__")
-        record_id=$(jq -r '.result[0].id // empty' <<<"$record")
-        old_content=$(jq -r '.result[0].content // empty' <<<"$record")
-        body=$(jq -cn --arg name '__ORIGIN_DOMAIN__' --arg content "$ipv6" \
-          '{type:"AAAA",name:$name,content:$content,ttl:60,proxied:false}')
-        if [ -n "$record_id" ] && [ "$old_content" != "$ipv6" ]; then
-          curl --fail --silent --show-error -X PUT -H "Authorization: Bearer ${cf_token}" \
-            -H 'Content-Type: application/json' --data "$body" "${api}/${record_id}" >/dev/null
-        elif [ -z "$record_id" ]; then
-          curl --fail --silent --show-error -X POST -H "Authorization: Bearer ${cf_token}" \
-            -H 'Content-Type: application/json' --data "$body" "$api" >/dev/null
+        if record=$(curl --fail --silent --show-error --max-time 10 \
+            -H "Authorization: Bearer ${cf_token}" \
+            "${api}?type=AAAA&name=__ORIGIN_DOMAIN__"); then
+          record_id=$(jq -r '.result[0].id // empty' <<<"$record")
+          old_content=$(jq -r '.result[0].content // empty' <<<"$record")
+          old_proxied=$(jq -r '.result[0].proxied // empty' <<<"$record")
+          body=$(jq -cn --arg name '__ORIGIN_DOMAIN__' --arg content "$ipv6" \
+            '{type:"AAAA",name:$name,content:$content,ttl:60,proxied:false}')
+          if [ -n "$record_id" ] && \
+              { [ "$old_content" != "$ipv6" ] || [ "$old_proxied" != 'false' ]; }; then
+            curl --fail --silent --show-error --max-time 10 -X PUT \
+              -H "Authorization: Bearer ${cf_token}" \
+              -H 'Content-Type: application/json' --data "$body" \
+              "${api}/${record_id}" >/dev/null || \
+              echo 'Cloudflare origin AAAA update failed; HAProxy remains active' >&2
+          elif [ -z "$record_id" ]; then
+            curl --fail --silent --show-error --max-time 10 -X POST \
+              -H "Authorization: Bearer ${cf_token}" \
+              -H 'Content-Type: application/json' --data "$body" "$api" >/dev/null || \
+              echo 'Cloudflare origin AAAA creation failed; HAProxy remains active' >&2
+          fi
+        else
+          echo 'Cloudflare origin AAAA lookup failed; HAProxy remains active' >&2
         fi
       fi
     fi

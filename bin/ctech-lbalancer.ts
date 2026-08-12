@@ -1,11 +1,17 @@
 #!/usr/bin/env node
 import * as cdk from 'aws-cdk-lib';
-import {DEFAULT_AWS_ACCOUNT, DEFAULT_AWS_REGION} from '../lib/constants';
+import {
+  DEFAULT_AWS_ACCOUNT,
+  DEFAULT_AWS_REGION,
+  DEFAULT_CLOUDFLARE_ZONE_ID,
+  HAPROXY_ARTIFACT_BUCKET_NAME,
+} from '../lib/constants';
+import {ArtifactStack} from '../lib/artifact-stack';
 import {LoadBalancerStack} from '../lib/load-balancer-stack';
 import {Environment} from '../lib/types';
 
 const app = new cdk.App();
-const cfZoneId = process.env.CLOUDFLARE_ZONE_ID || '250cb2c0-86f1-4dba-8e67-38331ffc8fb3';
+const cfZoneId = process.env.CLOUDFLARE_ZONE_ID || DEFAULT_CLOUDFLARE_ZONE_ID;
 const cloudwatchEnabled = process.env.ENABLE_CLOUDWATCH_METRICS || 'true';
 const environment = (process.env.ENVIRONMENT ?? 'dev') as Environment;
 const vpcId = process.env.CTECH_VPC_ID || 'vpc-0adfd86727d17445b';
@@ -25,7 +31,15 @@ if (!['t4g.nano', 't4g.micro'].includes(instanceType)) {
   throw new Error('INSTANCE_TYPE must be t4g.micro or t4g.nano');
 }
 
+if (!/^[a-f0-9]{32}$/i.test(cfZoneId)) {
+  throw new Error('CLOUDFLARE_ZONE_ID must be a 32-character hexadecimal Zone ID');
+}
+
 const cap = environment[0]!.toUpperCase() + environment.slice(1);
+const artifactStack = new ArtifactStack(app, 'Ctech-LoadBalancerArtifacts', {
+  env: {account, region},
+  description: 'Content-addressed HAProxy ARM64 build artifacts',
+});
 
 new LoadBalancerStack(app, `Ctech-${cap}-LoadBalancer`, {
   env: {account, region},
@@ -34,6 +48,8 @@ new LoadBalancerStack(app, `Ctech-${cap}-LoadBalancer`, {
   instanceType,
   cloudflareZoneId: cfZoneId,
   enableCloudWatchMetrics: cloudwatchEnabled === 'true',
+  artifactBucket: artifactStack.bucket,
+  artifactBucketName: HAPROXY_ARTIFACT_BUCKET_NAME,
   description: `CTech IPv6-only HAProxy edge (${environment})`,
 });
 

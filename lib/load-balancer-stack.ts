@@ -3,6 +3,7 @@ import * as autoscaling from 'aws-cdk-lib/aws-autoscaling';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import {Construct} from 'constructs';
 import {defaultRoutes, HAPROXY_VERSION, originDomainForEnv, ssmPaths} from './constants';
@@ -15,6 +16,8 @@ export interface LoadBalancerStackProps extends cdk.StackProps {
   instanceType: string;
   cloudflareZoneId?: string;
   enableCloudWatchMetrics: boolean;
+  artifactBucket: s3.IBucket;
+  artifactBucketName: string;
 }
 
 const STATUS_PATTERNS: ReadonlyArray<[string, string]> = [
@@ -56,18 +59,25 @@ export class LoadBalancerStack extends cdk.Stack {
     role.addToPolicy(new iam.PolicyStatement({
       actions: ['ssm:GetParameter', 'ssm:GetParameters', 'ssm:GetParametersByPath'],
       resources: [
+        `arn:${cdk.Aws.PARTITION}:ssm:${this.region}:${this.account}:parameter${paths.routes}`,
         `arn:${cdk.Aws.PARTITION}:ssm:${this.region}:${this.account}:parameter${paths.routes}/*`,
         `arn:${cdk.Aws.PARTITION}:ssm:${this.region}:${this.account}:parameter${paths.tlsCertificate}`,
         `arn:${cdk.Aws.PARTITION}:ssm:${this.region}:${this.account}:parameter${paths.tlsPrivateKey}`,
         `arn:${cdk.Aws.PARTITION}:ssm:${this.region}:${this.account}:parameter${paths.aopCa}`,
         `arn:${cdk.Aws.PARTITION}:ssm:${this.region}:${this.account}:parameter${paths.cloudflareDnsToken}`,
+        `arn:${cdk.Aws.PARTITION}:ssm:${this.region}:${this.account}:parameter${paths.haproxyArtifactSha256}`,
       ],
     }));
     role.addToPolicy(new iam.PolicyStatement({
       actions: ['ssm:PutParameter'],
       resources: [
         `arn:${cdk.Aws.PARTITION}:ssm:${this.region}:${this.account}:parameter${paths.originIpv6}`,
+        `arn:${cdk.Aws.PARTITION}:ssm:${this.region}:${this.account}:parameter${paths.haproxyArtifactSha256}`,
       ],
+    }));
+    role.addToPolicy(new iam.PolicyStatement({
+      actions: ['s3:GetObject', 's3:PutObject', 's3:AbortMultipartUpload'],
+      resources: [props.artifactBucket.arnForObjects('*')],
     }));
     role.addToPolicy(new iam.PolicyStatement({
       actions: ['autoscaling:DescribeAutoScalingGroups', 'ec2:DescribeInstances'],
@@ -133,6 +143,7 @@ export class LoadBalancerStack extends cdk.Stack {
         cloudflareZoneId: props.cloudflareZoneId,
         enableCloudWatchMetrics: props.enableCloudWatchMetrics,
         accessLogGroupName: accessLogGroup.logGroupName,
+        artifactBucketName: props.artifactBucketName,
       }),
       instanceProfile: iam.InstanceProfile.fromInstanceProfileName(
         this,
@@ -178,6 +189,8 @@ export class LoadBalancerStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'OriginIpv6Parameter', {value: paths.originIpv6});
     new cdk.CfnOutput(this, 'RouteParameterPrefix', {value: paths.routes});
     new cdk.CfnOutput(this, 'HAProxyVersion', {value: HAPROXY_VERSION});
+    new cdk.CfnOutput(this, 'HAProxyArtifactBucket', {value: props.artifactBucket.bucketName});
+    new cdk.CfnOutput(this, 'HAProxyArtifactHashParameter', {value: paths.haproxyArtifactSha256});
     new cdk.CfnOutput(this, 'CloudWatchMetricsEnabled', {
       value: props.enableCloudWatchMetrics ? 'true' : 'false',
     });

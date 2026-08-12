@@ -31,6 +31,10 @@ RAM on a nano; open-source nginx needs more care for changing upstream IPs.
 
 - Route registrations are free SSM Standard Parameters under
   `/ctech/{env}/lbalancer/routes/*`.
+- HAProxy is compiled once per pinned version on the first cache miss. The
+  verified ARM64 bundle is shared across environments in a retained S3 bucket;
+  its complete object key is the bundle's SHA-256, recorded in a versioned SSM
+  parameter. Replacements verify the digest and skip compilation.
 - Every 30 seconds the instance discovers all healthy `InService` members of the
   registered Auto Scaling Groups, validates a generated HAProxy config, and
   gracefully reloads only if something changed.
@@ -80,6 +84,11 @@ npm run build
 npm run synth
 npx cdk deploy Ctech-Prod-LoadBalancer --require-approval never
 ```
+
+The first deployment also creates the dependency stack
+`Ctech-LoadBalancerArtifacts`. Its bucket has no expiration rule and no public
+access. The load-balancer role can publish only to this artifact bucket and can
+update only the version-specific artifact hash parameter.
 
 Do not delete the ALB yet. Run both paths during migration, validate the new
 origin, cut Cloudflare/CloudFront origins over, and only then remove the ALB.
@@ -163,6 +172,7 @@ nginx log groups already produce similar per-service counters.
 | 4 GB gp3 root disk | about $0.32 | about $0.32 |
 | public IPv4 | $0 | $0 |
 | SSM Standard Parameters | $0 | $0 |
+| HAProxy S3 artifact | <$0.01 | <$0.01 |
 | local stats/Prometheus | $0 | $0 |
 | optional CloudWatch HTTP metrics | off | off |
 

@@ -137,8 +137,77 @@ seconds, or put the ASG instance in standby.
 ## 5. Upgrade HAProxy
 
 Patch upgrades are intentionally code changes. Update `HAPROXY_VERSION` and
-`HAPROXY_SHA256` in `lib/constants.ts`, run build/tests/synth, deploy to dev, then
+`HAPROXY_SOURCE_SHA256` in `lib/constants.ts`, run build/tests/synth, deploy to dev, then
 stage and prod. Never point the bootstrap at an unpinned `latest` artifact.
+
+Each version has a global cache pointer at
+`/ctech/global/lbalancer/haproxy/{version}/al2023-arm64/artifact-sha256`. Its
+value is also the complete object key in the retained
+`ctech-lbalancer-artifacts` bucket. On a cache miss, the first
+instance verifies the official source archive, compiles and strips HAProxy,
+creates a deterministic single-file bundle, uploads it with an S3 SHA-256
+checksum, and records the bundle hash. All later environments and replacements
+download and independently verify that hash before extraction.
+
+Inspect the active artifact without changing it:
+
+```bash
+VERSION=3.4.3
+HASH="$(aws ssm get-parameter \
+  --name "/ctech/global/lbalancer/haproxy/${VERSION}/al2023-arm64/artifact-sha256" \
+  --query Parameter.Value --output text)"
+BUCKET="$(aws cloudformation describe-stacks \
+  --stack-name Ctech-LoadBalancerArtifacts \
+  --query 'Stacks[0].Outputs[?OutputKey==`BucketName`].OutputValue' --output text)"
+aws s3api head-object --bucket "$BUCKET" --key "$HASH" --checksum-mode ENABLED
+```
+
+If a first boot compiled HAProxy but could not publish the cache, connect to that
+instance with Session Manager and publish the already-created bundle. Run this
+as root; the SSM pointer is written only after the S3 upload succeeds:
+
+```bash
+sudo -i
+export AWS_DEFAULT_REGION=us-east-1
+export AWS_USE_DUALSTACK_ENDPOINT=true
+
+ARTIFACT=/tmp/haproxy-artifact.tar.gz
+BUCKET=ctech-lbalancer-artifacts
+POINTER=/ctech/global/lbalancer/haproxy/3.4.3/al2023-arm64/artifact-sha256
+
+test "$(tar -tzf "$ARTIFACT")" = usr/local/sbin/haproxy
+HASH="$(sha256sum "$ARTIFACT" | awk '{print $1}')"
+aws s3api put-object \
+  --bucket "$BUCKET" --key "$HASH" --body "$ARTIFACT" \
+  --checksum-algorithm SHA256
+aws ssm put-parameter \
+  --name "$POINTER" --type String --value "$HASH" --overwrite
+
+VERIFY="$(mktemp)"
+aws s3api get-object --bucket "$BUCKET" --key "$HASH" "$VERIFY"
+echo "$HASH  $VERIFY" | sha256sum --check --strict
+rm -f "$VERIFY"
+aws ssm get-parameter --name "$POINTER" \
+  --query Parameter.Value --output text
+```
+
+If `/tmp/haproxy-artifact.tar.gz` is absent, recreate the same deterministic
+bundle from the installed binary before running the upload block:
+
+```bash
+ARTIFACT_ROOT="$(mktemp -d)"
+install -D -m 0755 /usr/local/sbin/haproxy \
+  "$ARTIFACT_ROOT/usr/local/sbin/haproxy"
+tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+  -C "$ARTIFACT_ROOT" -cf - usr/local/sbin/haproxy | \
+  gzip -n -9 > /tmp/haproxy-artifact.tar.gz
+rm -rf "$ARTIFACT_ROOT"
+```
+
+Do not use an S3 ETag as the artifact identity. To force a carefully reviewed
+rebuild of the same pinned version, delete only its SSM pointer; never delete a
+hash-addressed object still referenced by that parameter. A missing object or
+checksum mismatch falls back to the pinned source build.
 
 Changing launch-template user data starts an ASG instance refresh only when you
 explicitly request one. After deployment, replace the one load-balancer member:

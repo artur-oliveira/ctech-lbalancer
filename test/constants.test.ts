@@ -3,14 +3,24 @@ import {readFileSync} from 'node:fs';
 import {join} from 'node:path';
 import test from 'node:test';
 import * as cdk from 'aws-cdk-lib';
+import * as s3 from 'aws-cdk-lib/aws-s3';
 import {Template} from 'aws-cdk-lib/assertions';
+import {ArtifactStack} from '../lib/artifact-stack';
 import {buildUserData} from '../lib/user-data';
-import {defaultRoutes, HAPROXY_SHA256, HAPROXY_VERSION, originDomainForEnv} from '../lib/constants';
+import {
+  defaultRoutes,
+  DEFAULT_CLOUDFLARE_ZONE_ID,
+  HAPROXY_ARTIFACT_BUCKET_NAME,
+  HAPROXY_SOURCE_SHA256,
+  HAPROXY_VERSION,
+  originDomainForEnv,
+} from '../lib/constants';
 import {LoadBalancerStack} from '../lib/load-balancer-stack';
 
 test('pins the current HAProxy LTS patch and checksum', () => {
   assert.equal(HAPROXY_VERSION, '3.4.3');
-  assert.match(HAPROXY_SHA256, /^[a-f0-9]{64}$/);
+  assert.match(HAPROXY_SOURCE_SHA256, /^[a-f0-9]{64}$/);
+  assert.match(DEFAULT_CLOUDFLARE_ZONE_ID, /^[a-f0-9]{32}$/);
 });
 
 test('uses API origins and the existing service ASG contracts', () => {
@@ -18,6 +28,7 @@ test('uses API origins and the existing service ASG contracts', () => {
   assert.equal(routes.account?.hostname, 'accounts-api.aoctech.app');
   assert.equal(routes.dfe?.asg, 'prod-ctech-dfe-v2-api');
   assert.equal(routes.wallet?.asg, 'prod-ctech-wallet-v2-api');
+  assert.equal(routes.poker?.asg, 'prod-ctech-poker-v2');
   assert.equal(routes.poker?.port, 8080);
   assert.equal(originDomainForEnv('stage'), 'origin-stage.aoctech.app');
 });
@@ -29,9 +40,20 @@ test('compressed user data stays below the EC2 16 KiB raw limit', () => {
     cloudflareZoneId: 'zone-id',
     enableCloudWatchMetrics: false,
     accessLogGroupName: '/ctech-lbalancer/prod/access',
+    artifactBucketName: '111111111111-us-east-1-ctech-lbalancer-artifacts',
   }).render();
   assert.ok(Buffer.byteLength(rendered) < 16 * 1024, `user data is ${Buffer.byteLength(rendered)} bytes`);
   assert.doesNotMatch(rendered, /__HAPROXY_VERSION__|__AWS_REGION__|__ROUTES_PATH__/);
+});
+
+test('rejects unresolved CDK tokens in compressed user data', () => {
+  assert.throws(() => buildUserData({
+    environment: 'prod',
+    region: 'us-east-1',
+    enableCloudWatchMetrics: false,
+    accessLogGroupName: '/ctech-lbalancer/prod/access',
+    artifactBucketName: cdk.Token.asString({Ref: 'ArtifactBucket'}),
+  }), /artifactBucketName must be a physical name/);
 });
 
 test('bootstrap keeps curl-minimal and starts SSM before building HAProxy', () => {
@@ -44,18 +66,63 @@ test('bootstrap keeps curl-minimal and starts SSM before building HAProxy', () =
     'SSM must start before the HAProxy download and build',
   );
   assert.match(bootstrap, /"Region": "__AWS_REGION__", "UseDualStackEndpoint": true/);
+  assert.doesNotMatch(bootstrap, /haproxy -vv \| head/);
+  assert.match(bootstrap, /--key "\$artifact_sha256"/);
+  assert.match(bootstrap, /sha256sum --check --strict/);
+});
+
+test('reconciler keeps the jq status separator inside its filter', () => {
+  const reconcile = readFileSync(join(__dirname, '..', 'assets', 'reconcile.sh'), 'utf8');
+  assert.match(
+    reconcile,
+    /jq -r --argjson index "\$index" \\\n\s+'\.\[\$index\]\.healthyStatuses \| map\(tostring\) \| join\("\|"\)'/,
+  );
+  assert.doesNotMatch(reconcile, /map\(tostring\) \| join\("\|"\)"/);
+  assert.match(reconcile, /default_backend unknown_host/);
+  assert.match(reconcile, /backend unknown_host\n  http-request return status 421/);
+  assert.match(reconcile, /\[ "\$old_proxied" != 'false' \]/);
+  assert.doesNotMatch(reconcile, /use_backend[^\n]*\n(?:.|\n)*?http-request return status 421[^\n]*\n\nfrontend local_stats/);
+});
+
+test('retains the global artifact bucket without an expiration rule', () => {
+  const app = new cdk.App();
+  const stack = new ArtifactStack(app, 'ArtifactStack', {
+    env: {account: '111111111111', region: 'us-east-1'},
+  });
+  const template = Template.fromStack(stack);
+  const buckets = template.findResources('AWS::S3::Bucket');
+  const bucket = Object.values(buckets)[0];
+  assert.ok(bucket);
+  assert.equal(bucket.DeletionPolicy, 'Retain');
+  assert.equal(bucket.UpdateReplacePolicy, 'Retain');
+  assert.equal(bucket.Properties?.LifecycleConfiguration, undefined);
+  assert.deepEqual(bucket.Properties?.PublicAccessBlockConfiguration, {
+    BlockPublicAcls: true,
+    BlockPublicPolicy: true,
+    IgnorePublicAcls: true,
+    RestrictPublicBuckets: true,
+  });
 });
 
 test('synthesizes one IPv6-only ASG and four standard route parameters', () => {
   const app = new cdk.App();
+  const artifactStack = new cdk.Stack(app, 'ArtifactTestStack', {
+    env: {account: '111111111111', region: 'us-east-1'},
+  });
+  const artifactBucket = new s3.Bucket(artifactStack, 'ArtifactBucket');
   const stack = new LoadBalancerStack(app, 'TestStack', {
     env: {account: '111111111111', region: 'us-east-1'},
     environment: 'prod',
     vpcId: 'vpc-12345',
     instanceType: 't4g.nano',
     enableCloudWatchMetrics: false,
+    artifactBucket,
+    artifactBucketName: HAPROXY_ARTIFACT_BUCKET_NAME,
   });
   const template = Template.fromStack(stack);
+  const serializedTemplate = JSON.stringify(template.toJSON());
+  assert.match(serializedTemplate, /parameter\/ctech\/prod\/lbalancer\/routes"/);
+  assert.match(serializedTemplate, /parameter\/ctech\/prod\/lbalancer\/routes\/\*/);
   template.resourceCountIs('AWS::AutoScaling::AutoScalingGroup', 1);
   // Account, DFE, wallet, and poker API routes.
   template.resourceCountIs('AWS::SSM::Parameter', 4);

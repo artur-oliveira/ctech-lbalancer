@@ -1,8 +1,9 @@
 import {gzipSync} from 'node:zlib';
 import {readFileSync} from 'node:fs';
 import {join} from 'node:path';
+import {Token} from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
-import {HAPROXY_SHA256, HAPROXY_VERSION, originDomainForEnv, ssmPaths} from './constants';
+import {HAPROXY_SOURCE_SHA256, HAPROXY_VERSION, originDomainForEnv, ssmPaths} from './constants';
 import {Environment} from './types';
 
 export interface LoadBalancerUserDataProps {
@@ -11,6 +12,7 @@ export interface LoadBalancerUserDataProps {
   cloudflareZoneId?: string;
   enableCloudWatchMetrics: boolean;
   accessLogGroupName: string;
+  artifactBucketName: string;
 }
 
 function asset(name: string): string {
@@ -26,12 +28,15 @@ function installCompressed(userData: ec2.UserData, path: string, contents: strin
 }
 
 export function buildUserData(props: LoadBalancerUserDataProps): ec2.UserData {
+  if (Token.isUnresolved(props.artifactBucketName)) {
+    throw new Error('artifactBucketName must be a physical name, not a CDK token');
+  }
   const paths = ssmPaths(props.environment);
   const substitutions: Record<string, string> = {
     '__AWS_REGION__': props.region,
     '__ENVIRONMENT__': props.environment,
     '__HAPROXY_VERSION__': HAPROXY_VERSION,
-    '__HAPROXY_SHA256__': HAPROXY_SHA256,
+    '__HAPROXY_SOURCE_SHA256__': HAPROXY_SOURCE_SHA256,
     '__ROUTES_PATH__': paths.routes,
     '__ORIGIN_IPV6_PATH__': paths.originIpv6,
     '__TLS_CERTIFICATE_PATH__': paths.tlsCertificate,
@@ -42,6 +47,8 @@ export function buildUserData(props: LoadBalancerUserDataProps): ec2.UserData {
     '__ORIGIN_DOMAIN__': originDomainForEnv(props.environment),
     '__ENABLE_CLOUDWATCH__': props.enableCloudWatchMetrics ? 'true' : 'false',
     '__ACCESS_LOG_GROUP__': props.accessLogGroupName,
+    '__HAPROXY_ARTIFACT_BUCKET__': props.artifactBucketName,
+    '__HAPROXY_ARTIFACT_SHA256_PATH__': paths.haproxyArtifactSha256,
   };
 
   const replace = (input: string): string => Object.entries(substitutions)
