@@ -115,6 +115,7 @@ defaults
   timeout http-keep-alive 15s
   timeout tunnel 1h
   retries 2
+  http-error status 503 content-type application/json string '{"message": "Unavailable service"}'
 
 frontend https
   bind :::443 v6only ssl strict-sni crt /etc/haproxy/tls/origin.pem ca-file /etc/haproxy/tls/aop-ca.pem verify required alpn h2,http/1.1

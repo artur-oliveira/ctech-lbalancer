@@ -80,6 +80,10 @@ test('reconciler keeps the jq status separator inside its filter', () => {
   assert.doesNotMatch(reconcile, /map\(tostring\) \| join\("\|"\)"/);
   assert.match(reconcile, /default_backend unknown_host/);
   assert.match(reconcile, /backend unknown_host\n  http-request return status 421/);
+  assert.match(
+    reconcile,
+    /http-error status 503 content-type application\/json string '\{"message": "Unavailable service"\}'/,
+  );
   assert.match(reconcile, /\[ "\$old_proxied" != 'false' \]/);
   assert.doesNotMatch(reconcile, /use_backend[^\n]*\n(?:.|\n)*?http-request return status 421[^\n]*\n\nfrontend local_stats/);
 });
