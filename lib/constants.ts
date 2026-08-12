@@ -42,7 +42,7 @@ export function defaultRoutes(environment: Environment): Record<string, RouteReg
   return {
     account: {
       hostname: domainForEnv(environment, 'accounts-api'),
-      asg: `${environment}-ctech-account-v2`,
+      asg: `${environment}-ctech-account`,
       port: 8080,
       healthPath: '/v1.0/health-check',
       healthyStatuses: [200],
@@ -50,7 +50,7 @@ export function defaultRoutes(environment: Environment): Record<string, RouteReg
     },
     dfe: {
       hostname: domainForEnv(environment, 'dfe-api'),
-      asg: `${environment}-ctech-dfe-v2-api`,
+      asg: `${environment}-ctech-dfe`,
       port: 8080,
       healthPath: '/v1.0/health-check',
       healthyStatuses: [200, 207],
@@ -58,7 +58,7 @@ export function defaultRoutes(environment: Environment): Record<string, RouteReg
     },
     wallet: {
       hostname: domainForEnv(environment, 'wallet-api'),
-      asg: `${environment}-ctech-wallet-v2-api`,
+      asg: `${environment}-ctech-wallet`,
       port: 8080,
       healthPath: '/v1.0/health-check',
       healthyStatuses: [200, 207],
@@ -66,7 +66,7 @@ export function defaultRoutes(environment: Environment): Record<string, RouteReg
     },
     poker: {
       hostname: domainForEnv(environment, 'poker-api'),
-      asg: `${environment}-ctech-poker-v2`,
+      asg: `${environment}-ctech-poker`,
       port: 8080,
       healthPath: '/v1.0/health-check',
       healthyStatuses: [200, 207],
