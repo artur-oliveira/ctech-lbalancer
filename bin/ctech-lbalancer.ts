@@ -12,7 +12,7 @@ import {Environment} from '../lib/types';
 
 const app = new cdk.App();
 const cfZoneId = process.env.CLOUDFLARE_ZONE_ID || DEFAULT_CLOUDFLARE_ZONE_ID;
-const cloudwatchEnabled = process.env.ENABLE_CLOUDWATCH_METRICS || 'true';
+const enableCloudWatchMetrics = (process.env.ENABLE_CLOUDWATCH_METRICS || 'true') === 'true';
 const environment = (process.env.ENVIRONMENT ?? 'dev') as Environment;
 const vpcId = process.env.CTECH_VPC_ID || 'vpc-0adfd86727d17445b';
 const account = process.env.AWS_ACCOUNT ?? DEFAULT_AWS_ACCOUNT;
@@ -47,7 +47,7 @@ new LoadBalancerStack(app, `Ctech-${cap}-LoadBalancer`, {
   vpcId,
   instanceType,
   cloudflareZoneId: cfZoneId,
-  enableCloudWatchMetrics: cloudwatchEnabled === 'true',
+  enableCloudWatchMetrics,
   artifactBucket: artifactStack.bucket,
   artifactBucketName: HAPROXY_ARTIFACT_BUCKET_NAME,
   description: `CTech IPv6-only HAProxy edge (${environment})`,

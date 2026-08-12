@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib';
 import * as autoscaling from 'aws-cdk-lib/aws-autoscaling';
+import {Unit} from 'aws-cdk-lib/aws-cloudwatch';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
@@ -25,6 +26,14 @@ const STATUS_PATTERNS: ReadonlyArray<[string, string]> = [
   ['HTTP3XX', '{ ($.status >= 300) && ($.status < 400) }'],
   ['HTTP4XX', '{ ($.status >= 400) && ($.status < 500) }'],
   ['HTTP5XX', '{ $.status >= 500 }'],
+];
+
+const REQUEST_METRICS: ReadonlyArray<[string, string, string, Unit]> = [
+  ['RequestTotal', '{ $.status = * }', '1', Unit.COUNT],
+  ['TotalLatencyMilliseconds', '{ $.total_time_ms = * }', '$.total_time_ms', Unit.MILLISECONDS],
+  ['QueueLatencyMilliseconds', '{ $.queue_time_ms = * }', '$.queue_time_ms', Unit.MILLISECONDS],
+  ['BackendConnectLatencyMilliseconds', '{ $.backend_connect_time_ms = * }', '$.backend_connect_time_ms', Unit.MILLISECONDS],
+  ['BackendResponseLatencyMilliseconds', '{ $.backend_response_time_ms = * }', '$.backend_response_time_ms', Unit.MILLISECONDS],
 ];
 
 export class LoadBalancerStack extends cdk.Stack {
@@ -90,8 +99,12 @@ export class LoadBalancerStack extends cdk.Stack {
       resources: ['*'],
     }));
 
+    // User data is rendered before CloudFormation resolves tokens. Keep this
+    // physical name as a plain string so the CloudWatch Agent receives the
+    // actual log group instead of a literal ${Token[...]} placeholder.
+    const accessLogGroupName = `/ctech-lbalancer/${environment}/access`;
     const accessLogGroup = new logs.LogGroup(this, 'AccessLogs', {
-      logGroupName: `/ctech-lbalancer/${environment}/access`,
+      logGroupName: accessLogGroupName,
       retention: logs.RetentionDays.ONE_WEEK,
       removalPolicy: environment === 'prod' ? cdk.RemovalPolicy.RETAIN : cdk.RemovalPolicy.DESTROY,
     });
@@ -110,6 +123,16 @@ export class LoadBalancerStack extends cdk.Stack {
           defaultValue: 0,
         });
       }
+      for (const [name, pattern, metricValue, unit] of REQUEST_METRICS) {
+        new logs.MetricFilter(this, `${name}Filter`, {
+          logGroup: accessLogGroup,
+          metricNamespace: `CtechLoadBalancer/${environment}`,
+          metricName: name,
+          filterPattern: logs.FilterPattern.literal(pattern),
+          metricValue,
+          unit,
+        });
+      }
     }
 
     const profile = new iam.CfnInstanceProfile(this, 'InstanceProfile', {
@@ -126,7 +149,7 @@ export class LoadBalancerStack extends cdk.Stack {
       }),
       // T4g has no launch credits. Unlimited lets a replacement compile HAProxy
       // promptly; the one-time burst is repaid by the otherwise-idle 24h baseline.
-      cpuCredits: ec2.CpuCredits.UNLIMITED,
+      cpuCredits: ec2.CpuCredits.STANDARD,
       blockDevices: [{
         deviceName: '/dev/xvda',
         // Four GiB leaves enough temporary headroom for the verified source build
@@ -142,7 +165,7 @@ export class LoadBalancerStack extends cdk.Stack {
         region: this.region,
         cloudflareZoneId: props.cloudflareZoneId,
         enableCloudWatchMetrics: props.enableCloudWatchMetrics,
-        accessLogGroupName: accessLogGroup.logGroupName,
+        accessLogGroupName,
         artifactBucketName: props.artifactBucketName,
       }),
       instanceProfile: iam.InstanceProfile.fromInstanceProfileName(

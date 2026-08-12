@@ -54,6 +54,13 @@ test('rejects unresolved CDK tokens in compressed user data', () => {
     accessLogGroupName: '/ctech-lbalancer/prod/access',
     artifactBucketName: cdk.Token.asString({Ref: 'ArtifactBucket'}),
   }), /artifactBucketName must be a physical name/);
+  assert.throws(() => buildUserData({
+    environment: 'prod',
+    region: 'us-east-1',
+    enableCloudWatchMetrics: true,
+    accessLogGroupName: cdk.Token.asString({Ref: 'AccessLogGroup'}),
+    artifactBucketName: HAPROXY_ARTIFACT_BUCKET_NAME,
+  }), /accessLogGroupName must be a physical name/);
 });
 
 test('bootstrap keeps curl-minimal and starts SSM before building HAProxy', () => {
@@ -88,6 +95,26 @@ test('reconciler keeps the jq status separator inside its filter', () => {
   assert.doesNotMatch(reconcile, /use_backend[^\n]*\n(?:.|\n)*?http-request return status 421[^\n]*\n\nfrontend local_stats/);
 });
 
+test('HAProxy access logs isolate backend timing and identify the Cloudflare origin connection', () => {
+  const reconcile = readFileSync(join(__dirname, '..', 'assets', 'reconcile.sh'), 'utf8');
+  for (const field of [
+    'cf_ray',
+    'tls_protocol',
+    'tls_cipher',
+    'request_receive_time_ms',
+    'queue_time_ms',
+    'backend_connect_time_ms',
+    'backend_response_time_ms',
+    'total_time_ms',
+    'termination_state',
+  ]) {
+    assert.match(reconcile, new RegExp(`\\\\"${field}\\\\"`));
+  }
+  assert.match(reconcile, /capture request header CF-Ray len 128/);
+  assert.match(reconcile, /capture\.req\.hdr\(1\),json\(utf8s\)/);
+  assert.doesNotMatch(reconcile, /req\.uri|req\.hdr\(Cookie\)|req\.hdr\(Authorization\)/);
+});
+
 test('retains the global artifact bucket without an expiration rule', () => {
   const app = new cdk.App();
   const stack = new ArtifactStack(app, 'ArtifactStack', {
@@ -119,7 +146,7 @@ test('synthesizes one IPv6-only ASG and four standard route parameters', () => {
     environment: 'prod',
     vpcId: 'vpc-12345',
     instanceType: 't4g.nano',
-    enableCloudWatchMetrics: false,
+    enableCloudWatchMetrics: true,
     artifactBucket,
     artifactBucketName: HAPROXY_ARTIFACT_BUCKET_NAME,
   });
@@ -152,4 +179,5 @@ test('synthesizes one IPv6-only ASG and four standard route parameters', () => {
     (rule: {CidrIpv6?: string; IpProtocol?: string}) =>
       rule.CidrIpv6 === '::/0' && rule.IpProtocol === '-1',
   ));
+  template.resourceCountIs('AWS::Logs::MetricFilter', 9);
 });

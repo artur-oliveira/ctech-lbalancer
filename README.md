@@ -158,11 +158,15 @@ aws ssm start-session --target INSTANCE_ID \
 Open `http://127.0.0.1:8404/stats` or scrape `/metrics`. HAProxy exposes 2xx,
 3xx, 4xx, and 5xx counters by frontend/backend/server at no AWS metric cost.
 
-For persistent CloudWatch counts, deploy with
+For persistent CloudWatch request counts and latency breakdowns, deploy with
 `ENABLE_CLOUDWATCH_METRICS=true`. This ships JSON access logs and creates four
-metric filters in `CtechLoadBalancer/{env}`. It is deliberately opt-in because
-four custom metrics cost about $1.20/month before log ingestion, and the service
-nginx log groups already produce similar per-service counters.
+status metric filters plus five request/latency metric filters in
+`CtechLoadBalancer/{env}`. It is deliberately opt-in because these nine custom
+metrics cost about $2.70/month before log ingestion, and the service nginx log
+groups already produce similar per-service counters. The latency metrics are
+reported in milliseconds: `QueueLatencyMilliseconds`,
+`BackendConnectLatencyMilliseconds`, `BackendResponseLatencyMilliseconds`, and
+`TotalLatencyMilliseconds`.
 
 ## Cost envelope (us-east-1, 730-hour month)
 

@@ -120,13 +120,20 @@ defaults
 frontend https
   bind :::443 v6only ssl strict-sni crt /etc/haproxy/tls/origin.pem ca-file /etc/haproxy/tls/aop-ca.pem verify required alpn h2,http/1.1
   capture request header Host len 128
+  capture request header CF-Ray len 128
   http-request del-header Forwarded
   http-request del-header X-Forwarded-For
   http-request set-header X-Forwarded-For %[src]
   http-request set-header X-Forwarded-For %[req.hdr(CF-Connecting-IP)] if { req.hdr(CF-Connecting-IP) -m found }
   http-request set-header X-Real-IP %[req.hdr(CF-Connecting-IP)] if { req.hdr(CF-Connecting-IP) -m found }
   http-request set-header X-Forwarded-Proto https
-  log-format "{\"status\":%ST,\"host\":\"%[capture.req.hdr(0),json(utf8s)]\",\"backend\":\"%b\",\"server\":\"%s\",\"bytes\":%B,\"total_time_ms\":%Ta}"
+  # Cloudflare terminates visitor TLS, then establishes a separate mutually
+  # authenticated TLS connection to this frontend. The TLS fields below describe
+  # that Cloudflare-to-HAProxy connection. The timers are HAProxy transaction
+  # timers: they do not measure visitor-to-Cloudflare latency, while the queue,
+  # connect, and response components isolate work after routing to a backend.
+  # Do not log the URL, query, cookies, authorization headers, or client IPs.
+  log-format "{\"status\":%ST,\"host\":\"%[capture.req.hdr(0),json(utf8s)]\",\"backend\":\"%b\",\"server\":\"%s\",\"bytes\":%B,\"http_method\":\"%HM\",\"http_version\":\"%HV\",\"cf_ray\":\"%[capture.req.hdr(1),json(utf8s)]\",\"tls_protocol\":\"%[ssl_fc_protocol,json(utf8s)]\",\"tls_cipher\":\"%[ssl_fc_cipher,json(utf8s)]\",\"request_receive_time_ms\":%TR,\"queue_time_ms\":%Tw,\"backend_connect_time_ms\":%Tc,\"backend_response_time_ms\":%Tr,\"total_time_ms\":%Ta,\"termination_state\":\"%tsc\"}"
 HAPROXY
 
 route_count=$(jq 'length' <<<"$resolved")

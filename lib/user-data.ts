@@ -31,6 +31,9 @@ export function buildUserData(props: LoadBalancerUserDataProps): ec2.UserData {
   if (Token.isUnresolved(props.artifactBucketName)) {
     throw new Error('artifactBucketName must be a physical name, not a CDK token');
   }
+  if (Token.isUnresolved(props.accessLogGroupName)) {
+    throw new Error('accessLogGroupName must be a physical name, not a CDK token');
+  }
   const paths = ssmPaths(props.environment);
   const substitutions: Record<string, string> = {
     '__AWS_REGION__': props.region,

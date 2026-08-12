@@ -256,7 +256,11 @@ Migration sequence:
   would make first-boot compilation/recovery unacceptably slow.
 - **Memory:** 512 MiB is enough for this small route set and includes 512 MiB
   swap, but avoid adding a large control plane or per-request scripting.
-- **Logs:** local logs rotate at 20 MiB/three days. With CloudWatch disabled they
+- **Logs:** local logs rotate at 20 MiB/three days. JSON entries include the
+  HAProxy queue, backend-connect, backend-response, and total timings in
+  milliseconds. `tls_protocol` and `tls_cipher` refer to Cloudflare's mutually
+  authenticated TLS connection to HAProxy, while `cf_ray` correlates the edge
+  request without logging client IPs or request URLs. With CloudWatch disabled they
   disappear on replacement; metrics remain live-only.
 - **Cross-AZ traffic:** a target in another AZ incurs regional data transfer.
 - **Bad health endpoint:** auto-heal will correctly but repeatedly replace an app
