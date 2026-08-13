@@ -31,6 +31,9 @@ RAM on a nano; open-source nginx needs more care for changing upstream IPs.
 
 - Route registrations are free SSM Standard Parameters under
   `/ctech/{env}/lbalancer/routes/*`.
+- The four bootstrap registrations use the current unsuffixed service ASG names
+  (`{env}-ctech-{account,dfe,wallet,poker}`), matching the service CDK outputs and
+  the deployed production route parameters.
 - HAProxy is compiled once per pinned version on the first cache miss. The
   verified ARM64 bundle is shared across environments in a retained S3 bucket;
   its complete object key is the bundle's SHA-256, recorded in a versioned SSM
@@ -46,6 +49,18 @@ RAM on a nano; open-source nginx needs more care for changing upstream IPs.
 - `nftables` accepts port 443 only from Cloudflare's published IPv6 ranges.
   HAProxy then requires a zone-specific Authenticated Origin Pull client
   certificate, so both the network source and TLS identity must be Cloudflare.
+- Client IP resolution supports direct API traffic
+  (`viewer -> Cloudflare -> HAProxy`) and same-origin frontend API traffic
+  (`viewer -> Cloudflare -> CloudFront -> Cloudflare -> HAProxy`). HAProxy starts
+  from Cloudflare's authenticated `CF-Connecting-IP` and, only when that address
+  belongs to AWS's CloudFront origin-facing ranges, walks the right side of
+  `X-Forwarded-For` past the known CloudFront and optional Cloudflare hop. It
+  overwrites downstream forwarding headers with the resolved viewer IP, so
+  client-supplied entries further left cannot affect audits or rate limits.
+- Cloudflare IPv4/IPv6 ranges and AWS's managed CloudFront origin-facing prefix
+  list refresh daily. AWS ranges are read through the EC2 dual-stack API because
+  the instance has no public IPv4 or NAT. Failed refreshes keep the last valid
+  files, while reviewed static fallbacks make first boot deterministic.
 - The instance retains the shared edge security group as its identity toward
   backend service SGs and attaches a second, egress-only group for free IPv6
   access to SSM and required internet endpoints.
@@ -111,7 +126,10 @@ SSM parameter containing this shape:
   "asg": "prod-ctech-billing-api",
   "port": 8080,
   "healthPath": "/v1.0/health-check",
-  "healthyStatuses": [200, 207],
+  "healthyStatuses": [
+    200,
+    207
+  ],
   "autoHeal": true
 }
 ```
@@ -170,15 +188,15 @@ reported in milliseconds: `QueueLatencyMilliseconds`,
 
 ## Cost envelope (us-east-1, 730-hour month)
 
-| Item | During free tier | After free tier |
-|---|---:|---:|
-| t4g.micro / t4g.nano | eligible / about $6.13 | about $3.07 |
-| 4 GB gp3 root disk | about $0.32 | about $0.32 |
-| public IPv4 | $0 | $0 |
-| SSM Standard Parameters | $0 | $0 |
-| HAProxy S3 artifact | <$0.01 | <$0.01 |
-| local stats/Prometheus | $0 | $0 |
-| optional CloudWatch HTTP metrics | off | off |
+| Item                             |       During free tier | After free tier |
+|----------------------------------|-----------------------:|----------------:|
+| t4g.micro / t4g.nano             | eligible / about $6.13 |     about $3.07 |
+| 4 GB gp3 root disk               |            about $0.32 |     about $0.32 |
+| public IPv4                      |                     $0 |              $0 |
+| SSM Standard Parameters          |                     $0 |              $0 |
+| HAProxy S3 artifact              |                 <$0.01 |          <$0.01 |
+| local stats/Prometheus           |                     $0 |              $0 |
+| optional CloudWatch HTTP metrics |                    off |             off |
 
 The ALB base fee alone is about $16.43/month before LCU usage. Normal EC2 data
 transfer still applies. Cross-AZ backend traffic can add regional transfer cost;

@@ -26,9 +26,10 @@ test('pins the current HAProxy LTS patch and checksum', () => {
 test('uses API origins and the existing service ASG contracts', () => {
   const routes = defaultRoutes('prod');
   assert.equal(routes.account?.hostname, 'accounts-api.aoctech.app');
-  assert.equal(routes.dfe?.asg, 'prod-ctech-dfe-v2-api');
-  assert.equal(routes.wallet?.asg, 'prod-ctech-wallet-v2-api');
-  assert.equal(routes.poker?.asg, 'prod-ctech-poker-v2');
+  assert.equal(routes.account?.asg, 'prod-ctech-account');
+  assert.equal(routes.dfe?.asg, 'prod-ctech-dfe');
+  assert.equal(routes.wallet?.asg, 'prod-ctech-wallet');
+  assert.equal(routes.poker?.asg, 'prod-ctech-poker');
   assert.equal(routes.poker?.port, 8080);
   assert.equal(originDomainForEnv('stage'), 'origin-stage.aoctech.app');
 });
@@ -95,6 +96,40 @@ test('reconciler keeps the jq status separator inside its filter', () => {
   assert.doesNotMatch(reconcile, /use_backend[^\n]*\n(?:.|\n)*?http-request return status 421[^\n]*\n\nfrontend local_stats/);
 });
 
+test('reconciler resolves the client IP by stripping only trusted stacked-CDN hops', () => {
+  const reconcile = readFileSync(join(__dirname, '..', 'assets', 'reconcile.sh'), 'utf8');
+  const start = reconcile.indexOf('frontend https');
+  const end = reconcile.indexOf('frontend local_stats');
+  const frontend = reconcile.slice(start, end);
+
+  assert.match(frontend, /cf_connecting_is_cloudfront req\.hdr_ip\(CF-Connecting-IP\) -m ip -f \/etc\/haproxy\/cloudfront-origin-proxies\.lst/);
+  assert.match(frontend, /xff_last_is_cloudfront req\.hdr_ip\(X-Forwarded-For,-1\) -m ip -f \/etc\/haproxy\/cloudfront-origin-proxies\.lst/);
+  assert.match(frontend, /xff_penultimate_is_cloudflare req\.hdr_ip\(X-Forwarded-For,-2\) -m ip -f \/etc\/haproxy\/cloudflare-proxies\.lst/);
+  assert.match(frontend, /set-var\(txn\.client_ip\) req\.hdr_ip\(X-Forwarded-For,-2\) if cf_connecting_is_cloudfront xff_last_is_cloudfront/);
+  assert.match(frontend, /set-var\(txn\.client_ip\) req\.hdr_ip\(X-Forwarded-For,-3\) if cf_connecting_is_cloudfront xff_last_is_cloudfront xff_penultimate_is_cloudflare/);
+  assert.match(frontend, /set-header X-Forwarded-For %\[var\(txn\.client_ip\)\]/);
+  assert.match(frontend, /set-header X-Real-IP %\[var\(txn\.client_ip\)\]/);
+  assert.ok(frontend.indexOf('req.hdr_ip(X-Forwarded-For,-3)') < frontend.indexOf('del-header X-Forwarded-For'));
+  assert.doesNotMatch(frontend, /set-header X-Forwarded-For %\[req\.hdr\(CF-Connecting-IP\)\]/);
+});
+
+test('trusted CDN ranges use IPv6-capable refresh paths and retain safe fallbacks', () => {
+  const refresh = readFileSync(join(__dirname, '..', 'assets', 'refresh-cloudflare-ips.sh'), 'utf8');
+  const stack = readFileSync(join(__dirname, '..', 'lib', 'load-balancer-stack.ts'), 'utf8');
+  assert.match(refresh, /https:\/\/www\.cloudflare\.com\/ips-v4/);
+  assert.match(refresh, /https:\/\/www\.cloudflare\.com\/ips-v6/);
+  assert.match(refresh, /com\.amazonaws\.global\.cloudfront\.origin-facing/);
+  assert.match(refresh, /describe-managed-prefix-lists/);
+  assert.match(refresh, /get-managed-prefix-list-entries/);
+  assert.match(refresh, /AWS_USE_DUALSTACK_ENDPOINT=true/);
+  assert.doesNotMatch(refresh, /ip-ranges\.amazonaws\.com\/ip-ranges\.json/);
+  assert.match(refresh, /15\.158\.0\.0\/16/);
+  assert.match(refresh, /elif \[ -s "\$CLOUDFRONT_PROXY_LIST" \]/);
+  assert.match(refresh, /haproxy -c -f \/etc\/haproxy\/haproxy\.cfg/);
+  assert.match(stack, /'ec2:DescribeManagedPrefixLists'/);
+  assert.match(stack, /'ec2:GetManagedPrefixListEntries'/);
+});
+
 test('HAProxy access logs isolate backend timing and identify the Cloudflare origin connection', () => {
   const reconcile = readFileSync(join(__dirname, '..', 'assets', 'reconcile.sh'), 'utf8');
   for (const field of [
@@ -159,7 +194,7 @@ test('synthesizes one IPv6-only ASG and four standard route parameters', () => {
   template.resourceCountIs('AWS::SSM::Parameter', 4);
   template.hasResourceProperties('AWS::EC2::LaunchTemplate', {
     LaunchTemplateData: {
-      CreditSpecification: {CpuCredits: 'unlimited'},
+      CreditSpecification: {CpuCredits: 'standard'},
       NetworkInterfaces: [{
         AssociatePublicIpAddress: false,
         DeviceIndex: 0,

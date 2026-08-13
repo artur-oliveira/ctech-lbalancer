@@ -172,7 +172,7 @@ fi
 
 cat > /etc/systemd/system/ctech-cloudflare-ips.service <<'UNIT'
 [Unit]
-Description=Refresh Cloudflare-only IPv6 firewall
+Description=Refresh trusted CDN ranges and Cloudflare-only IPv6 firewall
 After=network-online.target
 Wants=network-online.target
 
@@ -183,7 +183,7 @@ UNIT
 
 cat > /etc/systemd/system/ctech-cloudflare-ips.timer <<'UNIT'
 [Unit]
-Description=Daily Cloudflare IPv6 allowlist refresh
+Description=Daily trusted CDN range and Cloudflare IPv6 allowlist refresh
 
 [Timer]
 OnBootSec=2min

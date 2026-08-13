@@ -89,7 +89,12 @@ export class LoadBalancerStack extends cdk.Stack {
       resources: [props.artifactBucket.arnForObjects('*')],
     }));
     role.addToPolicy(new iam.PolicyStatement({
-      actions: ['autoscaling:DescribeAutoScalingGroups', 'ec2:DescribeInstances'],
+      actions: [
+        'autoscaling:DescribeAutoScalingGroups',
+        'ec2:DescribeInstances',
+        'ec2:DescribeManagedPrefixLists',
+        'ec2:GetManagedPrefixListEntries',
+      ],
       resources: ['*'],
     }));
     // Auto-healing is route opt-in. SetInstanceHealth has no useful dynamic

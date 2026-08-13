@@ -89,7 +89,11 @@ check all of the following:
 
 - normal API request and health endpoint;
 - WebSocket upgrade and a connection longer than 65 seconds (poker);
-- `CF-Connecting-IP` becomes the application client IP;
+- direct API traffic reports `CF-Connecting-IP` as the application client IP;
+- same-origin `/v1.0/*` traffic through CloudFront reports the original viewer,
+  not an AWS CloudFront origin-facing address such as `15.158.0.0/16`;
+- a client-supplied leftmost `X-Forwarded-For` value does not change the
+  application IP;
 - unknown Host returns 421;
 - stopped target becomes HAProxy `DOWN` after about 15 seconds;
 - replacement ASG target appears within about 30 seconds of reaching `InService`;

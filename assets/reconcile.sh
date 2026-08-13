@@ -121,11 +121,22 @@ frontend https
   bind :::443 v6only ssl strict-sni crt /etc/haproxy/tls/origin.pem ca-file /etc/haproxy/tls/aop-ca.pem verify required alpn h2,http/1.1
   capture request header Host len 128
   capture request header CF-Ray len 128
+  # Direct API requests arrive as viewer -> Cloudflare -> HAProxy, while the
+  # static frontends' same-origin API requests add CloudFront (and sometimes a
+  # second Cloudflare hop) before this edge. Start with Cloudflare's authenticated
+  # single-IP header, then walk only the known trusted hops from the right side
+  # of X-Forwarded-For. Entries further left are never trusted.
+  acl cf_connecting_is_cloudfront req.hdr_ip(CF-Connecting-IP) -m ip -f /etc/haproxy/cloudfront-origin-proxies.lst
+  acl xff_last_is_cloudfront req.hdr_ip(X-Forwarded-For,-1) -m ip -f /etc/haproxy/cloudfront-origin-proxies.lst
+  acl xff_penultimate_is_cloudflare req.hdr_ip(X-Forwarded-For,-2) -m ip -f /etc/haproxy/cloudflare-proxies.lst
+  http-request set-var(txn.client_ip) src
+  http-request set-var(txn.client_ip) req.hdr_ip(CF-Connecting-IP) if { req.hdr(CF-Connecting-IP) -m found }
+  http-request set-var(txn.client_ip) req.hdr_ip(X-Forwarded-For,-2) if cf_connecting_is_cloudfront xff_last_is_cloudfront
+  http-request set-var(txn.client_ip) req.hdr_ip(X-Forwarded-For,-3) if cf_connecting_is_cloudfront xff_last_is_cloudfront xff_penultimate_is_cloudflare
   http-request del-header Forwarded
   http-request del-header X-Forwarded-For
-  http-request set-header X-Forwarded-For %[src]
-  http-request set-header X-Forwarded-For %[req.hdr(CF-Connecting-IP)] if { req.hdr(CF-Connecting-IP) -m found }
-  http-request set-header X-Real-IP %[req.hdr(CF-Connecting-IP)] if { req.hdr(CF-Connecting-IP) -m found }
+  http-request set-header X-Forwarded-For %[var(txn.client_ip)]
+  http-request set-header X-Real-IP %[var(txn.client_ip)]
   http-request set-header X-Forwarded-Proto https
   # Cloudflare terminates visitor TLS, then establishes a separate mutually
   # authenticated TLS connection to this frontend. The TLS fields below describe
