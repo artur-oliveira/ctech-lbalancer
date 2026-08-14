@@ -16,7 +16,16 @@ parameter() {
     --query 'Parameter.Value' --output text 2>/dev/null
 }
 
-install_tls() {
+certificate_matches_key() {
+  local bundle=$1 cert_digest key_digest
+  cert_digest=$(openssl x509 -in "$bundle" -pubkey -noout \
+    | openssl pkey -pubin -outform DER 2>/dev/null | sha256sum | cut -d' ' -f1) || return 1
+  key_digest=$(openssl pkey -in "$bundle" -pubout -outform DER 2>/dev/null \
+    | sha256sum | cut -d' ' -f1) || return 1
+  [ "$cert_digest" = "$key_digest" ]
+}
+
+install_external_tls() {
   local cert key ca bundle_tmp ca_tmp
   cert=$(parameter '__TLS_CERTIFICATE_PATH__') || return 1
   key=$(parameter '__TLS_PRIVATE_KEY_PATH__') || return 1
@@ -27,17 +36,59 @@ install_tls() {
   ca_tmp=$(mktemp)
   printf '%s\n%s\n' "$cert" "$key" > "$bundle_tmp"
   printf '%s\n' "$ca" > "$ca_tmp"
-  openssl x509 -in "$bundle_tmp" -noout -checkend 86400 >/dev/null
-  openssl pkey -in "$bundle_tmp" -noout >/dev/null
-  openssl x509 -in "$ca_tmp" -noout >/dev/null
-  install -o root -g haproxy -m 0640 "$bundle_tmp" /etc/haproxy/tls/origin.pem
-  install -o root -g haproxy -m 0640 "$ca_tmp" /etc/haproxy/tls/aop-ca.pem
+  if ! openssl x509 -in "$bundle_tmp" -noout -checkend 86400 >/dev/null ||
+      ! openssl pkey -in "$bundle_tmp" -noout >/dev/null ||
+      ! openssl x509 -in "$ca_tmp" -noout >/dev/null ||
+      ! certificate_matches_key "$bundle_tmp"; then
+    rm -f "$bundle_tmp" "$ca_tmp"
+    return 1
+  fi
+  if ! install -o root -g haproxy -m 0640 "$bundle_tmp" /etc/haproxy/tls/origin.pem ||
+      ! install -o root -g haproxy -m 0640 "$ca_tmp" /etc/haproxy/tls/aop-ca.pem; then
+    rm -f "$bundle_tmp" "$ca_tmp"
+    return 1
+  fi
   rm -f "$bundle_tmp" "$ca_tmp"
 }
 
-if ! install_tls; then
+install_internal_tls() {
+  local cert key bundle_tmp
+  cert=$(parameter '__INTERNAL_TLS_CERTIFICATE_PATH__') || return 1
+  key=$(parameter '__INTERNAL_TLS_PRIVATE_KEY_PATH__') || return 1
+  [ -n "$cert" ] && [ -n "$key" ] || return 1
+
+  bundle_tmp=$(mktemp)
+  printf '%s\n%s\n' "$cert" "$key" > "$bundle_tmp"
+  if ! openssl x509 -in "$bundle_tmp" -noout -checkend 86400 >/dev/null ||
+      ! openssl pkey -in "$bundle_tmp" -noout >/dev/null ||
+      ! certificate_matches_key "$bundle_tmp"; then
+    rm -f "$bundle_tmp"
+    return 1
+  fi
+  if ! install -o root -g haproxy -m 0640 "$bundle_tmp" /etc/haproxy/tls/internal.pem; then
+    rm -f "$bundle_tmp"
+    return 1
+  fi
+  rm -f "$bundle_tmp"
+}
+
+if ! install_external_tls; then
   echo 'TLS parameters are not ready; HAProxy remains stopped and the timer will retry' >&2
   exit 0
+fi
+
+internal_tls_ready=false
+if [ '__ENABLE_INTERNAL_M2M__' = 'true' ]; then
+  if install_internal_tls; then
+    internal_tls_ready=true
+  elif [ -s /etc/haproxy/tls/internal.pem ] &&
+      openssl x509 -in /etc/haproxy/tls/internal.pem -noout -checkend 86400 >/dev/null &&
+      certificate_matches_key /etc/haproxy/tls/internal.pem; then
+    internal_tls_ready=true
+    echo 'Internal TLS update is incomplete; continuing with the last valid certificate' >&2
+  else
+    echo 'Internal TLS parameters are not ready; public traffic remains active and private M2M stays closed' >&2
+  fi
 fi
 
 routes=$(aws ssm get-parameters-by-path --path '__ROUTES_PATH__' --recursive \
@@ -46,13 +97,29 @@ routes=$(aws ssm get-parameters-by-path --path '__ROUTES_PATH__' --recursive \
 jq -e '
   all(.[];
     (.hostname | type == "string" and test("^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$")) and
+    ((.internalHostname // null) == null or
+      (.internalHostname | type == "string" and
+        test("^[a-z0-9]([a-z0-9.-]*[a-z0-9])?\\.__PRIVATE_ZONE_NAME__$"))) and
     (.asg | type == "string" and test("^[A-Za-z0-9+=,.@_-]+$")) and
     (.port | type == "number" and . >= 1 and . <= 65535 and floor == .) and
     (.healthPath | type == "string" and test("^/[-A-Za-z0-9._~/?=&%]*$")) and
     (.healthyStatuses | type == "array" and length > 0 and all(.[]; type == "number" and . >= 100 and . <= 599)) and
     (.autoHeal | type == "boolean")
-  ) and ([.[].hostname] | length == (unique | length))
+  ) and
+  ([.[].hostname] | length == (unique | length)) and
+  ([.[] | select(.internalHostname != null) | .internalHostname] | length == (unique | length))
 ' >/dev/null <<<"$routes"
+
+if [ "$internal_tls_ready" = true ]; then
+  while IFS= read -r internal_hostname; do
+    if ! openssl x509 -in /etc/haproxy/tls/internal.pem -noout \
+        -checkhost "$internal_hostname" >/dev/null; then
+      internal_tls_ready=false
+      echo "Internal certificate does not cover ${internal_hostname}; private M2M stays closed" >&2
+      break
+    fi
+  done < <(jq -r '.[] | .internalHostname // empty' <<<"$routes" | sort -u)
+fi
 
 mapfile -t asg_names < <(jq -r '.[].asg' <<<"$routes" | sort -u)
 if [ "${#asg_names[@]}" -gt 0 ]; then
@@ -91,7 +158,11 @@ resolved=$(jq -cn \
 
 new_config=$(mktemp)
 trap 'rm -f "$new_config"' EXIT
-tls_fingerprint=$(sha256sum /etc/haproxy/tls/origin.pem /etc/haproxy/tls/aop-ca.pem | sha256sum | cut -d' ' -f1)
+tls_files=(/etc/haproxy/tls/origin.pem /etc/haproxy/tls/aop-ca.pem)
+if [ "$internal_tls_ready" = true ]; then
+  tls_files+=(/etc/haproxy/tls/internal.pem)
+fi
+tls_fingerprint=$(sha256sum "${tls_files[@]}" | sha256sum | cut -d' ' -f1)
 printf '# tls-fingerprint %s\n' "$tls_fingerprint" > "$new_config"
 cat >> "$new_config" <<'HAPROXY'
 global
@@ -153,8 +224,36 @@ for ((index=0; index<route_count; index++)); do
   printf '  acl route_%d hdr(host),lower -i %s\n' "$index" "$hostname" >> "$new_config"
   printf '  use_backend route_%d if route_%d\n' "$index" "$index" >> "$new_config"
 done
+printf '  default_backend unknown_host\n' >> "$new_config"
+
+if [ "$internal_tls_ready" = true ]; then
+  cat >> "$new_config" <<'HAPROXY'
+
+frontend internal_https
+  bind 0.0.0.0:443 ssl strict-sni crt /etc/haproxy/tls/internal.pem alpn h2,http/1.1
+  capture request header Host len 128
+  # Private callers are not allowed to inject identity from a public proxy.
+  # The source IP seen on this VPC connection is the only trusted network hop.
+  http-request del-header Forwarded
+  http-request del-header CF-Connecting-IP
+  http-request del-header True-Client-IP
+  http-request del-header X-Forwarded-For
+  http-request del-header X-Real-IP
+  http-request set-header X-Forwarded-For %[src]
+  http-request set-header X-Real-IP %[src]
+  http-request set-header X-Forwarded-Proto https
+  log-format "{\"entrypoint\":\"internal\",\"status\":%ST,\"host\":\"%[capture.req.hdr(0),json(utf8s)]\",\"backend\":\"%b\",\"server\":\"%s\",\"bytes\":%B,\"http_method\":\"%HM\",\"http_version\":\"%HV\",\"tls_protocol\":\"%[ssl_fc_protocol,json(utf8s)]\",\"tls_cipher\":\"%[ssl_fc_cipher,json(utf8s)]\",\"request_receive_time_ms\":%TR,\"queue_time_ms\":%Tw,\"backend_connect_time_ms\":%Tc,\"backend_response_time_ms\":%Tr,\"total_time_ms\":%Ta,\"termination_state\":\"%tsc\"}"
+HAPROXY
+  for ((index=0; index<route_count; index++)); do
+    internal_hostname=$(jq -r ".[${index}].internalHostname // empty" <<<"$resolved")
+    [ -n "$internal_hostname" ] || continue
+    printf '  acl internal_route_%d hdr(host),lower -i %s\n' "$index" "$internal_hostname" >> "$new_config"
+    printf '  use_backend route_%d if internal_route_%d\n' "$index" "$index" >> "$new_config"
+  done
+  printf '  default_backend unknown_host\n' >> "$new_config"
+fi
+
 cat >> "$new_config" <<'HAPROXY'
-  default_backend unknown_host
 
 frontend local_stats
   bind 127.0.0.1:8404
@@ -244,6 +343,29 @@ imds_token=$(curl --silent --fail --max-time 2 -X PUT \
   -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' \
   http://169.254.169.254/latest/api/token || true)
 if [ -n "$imds_token" ]; then
+  if [ "$internal_tls_ready" = true ]; then
+    private_ipv4=$(curl --silent --fail --max-time 2 \
+      -H "X-aws-ec2-metadata-token: ${imds_token}" \
+      http://169.254.169.254/latest/meta-data/local-ipv4 || true)
+    private_zone_id=$(parameter '__PRIVATE_ZONE_ID_PATH__' || true)
+    private_dns_state="$STATE_DIR/internal-dns-ipv4"
+    old_private_ipv4=''
+    [ ! -f "$private_dns_state" ] || old_private_ipv4=$(cat "$private_dns_state")
+    if [ -n "$private_ipv4" ] && [ -n "$private_zone_id" ] && \
+        [ "$private_ipv4" != "$old_private_ipv4" ]; then
+      change_batch=$(jq -cn --arg name '__INTERNAL_LBALANCER_DOMAIN__' \
+        --arg value "$private_ipv4" '{Changes:[{Action:"UPSERT",ResourceRecordSet:{
+          Name:$name,Type:"A",TTL:10,ResourceRecords:[{Value:$value}]
+        }}]}')
+      if aws route53 change-resource-record-sets --hosted-zone-id "$private_zone_id" \
+          --change-batch "$change_batch" >/dev/null; then
+        printf '%s\n' "$private_ipv4" > "$private_dns_state"
+      else
+        echo 'Private load-balancer DNS update failed; HAProxy remains active' >&2
+      fi
+    fi
+  fi
+
   mac=$(curl --silent --fail --max-time 2 -H "X-aws-ec2-metadata-token: ${imds_token}" \
     http://169.254.169.254/latest/meta-data/mac || true)
   ipv6=$(curl --silent --fail --max-time 2 -H "X-aws-ec2-metadata-token: ${imds_token}" \

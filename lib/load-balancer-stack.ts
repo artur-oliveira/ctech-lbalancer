@@ -4,10 +4,19 @@ import {Unit} from 'aws-cdk-lib/aws-cloudwatch';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as logs from 'aws-cdk-lib/aws-logs';
+import * as route53 from 'aws-cdk-lib/aws-route53';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import {Construct} from 'constructs';
-import {defaultRoutes, HAPROXY_VERSION, originDomainForEnv, ssmPaths} from './constants';
+import {
+  defaultRoutes,
+  HAPROXY_VERSION,
+  internalLoadBalancerDomain,
+  originDomainForEnv,
+  PRIVATE_HOSTED_ZONE_ID_PARAMETER,
+  PRIVATE_ZONE_NAME,
+  ssmPaths,
+} from './constants';
 import {Environment} from './types';
 import {buildUserData} from './user-data';
 
@@ -17,6 +26,7 @@ export interface LoadBalancerStackProps extends cdk.StackProps {
   instanceType: string;
   cloudflareZoneId?: string;
   enableCloudWatchMetrics: boolean;
+  enableInternalM2m: boolean;
   artifactBucket: s3.IBucket;
   artifactBucketName: string;
 }
@@ -43,6 +53,15 @@ export class LoadBalancerStack extends cdk.Stack {
     const {environment} = props;
     const paths = ssmPaths(environment);
     const vpc = ec2.Vpc.fromLookup(this, 'Vpc', {vpcId: props.vpcId});
+    const privateHostedZoneId = props.enableInternalM2m
+      ? ssm.StringParameter.valueForStringParameter(this, PRIVATE_HOSTED_ZONE_ID_PARAMETER)
+      : undefined;
+    const privateZone = privateHostedZoneId
+      ? route53.HostedZone.fromHostedZoneAttributes(this, 'PrivateZone', {
+        hostedZoneId: privateHostedZoneId,
+        zoneName: PRIVATE_ZONE_NAME,
+      })
+      : undefined;
     const edgeSgId = ssm.StringParameter.valueForStringParameter(this, paths.edgeSecurityGroupId);
     const edgeSg = ec2.SecurityGroup.fromSecurityGroupId(this, 'EdgeSg', edgeSgId, {
       mutable: false,
@@ -72,11 +91,31 @@ export class LoadBalancerStack extends cdk.Stack {
         `arn:${cdk.Aws.PARTITION}:ssm:${this.region}:${this.account}:parameter${paths.routes}/*`,
         `arn:${cdk.Aws.PARTITION}:ssm:${this.region}:${this.account}:parameter${paths.tlsCertificate}`,
         `arn:${cdk.Aws.PARTITION}:ssm:${this.region}:${this.account}:parameter${paths.tlsPrivateKey}`,
+        `arn:${cdk.Aws.PARTITION}:ssm:${this.region}:${this.account}:parameter${paths.internalTlsCertificate}`,
+        `arn:${cdk.Aws.PARTITION}:ssm:${this.region}:${this.account}:parameter${paths.internalTlsPrivateKey}`,
         `arn:${cdk.Aws.PARTITION}:ssm:${this.region}:${this.account}:parameter${paths.aopCa}`,
         `arn:${cdk.Aws.PARTITION}:ssm:${this.region}:${this.account}:parameter${paths.cloudflareDnsToken}`,
         `arn:${cdk.Aws.PARTITION}:ssm:${this.region}:${this.account}:parameter${paths.haproxyArtifactSha256}`,
+        ...(props.enableInternalM2m
+          ? [`arn:${cdk.Aws.PARTITION}:ssm:${this.region}:${this.account}:parameter${PRIVATE_HOSTED_ZONE_ID_PARAMETER}`]
+          : []),
       ],
     }));
+    if (privateHostedZoneId) {
+      role.addToPolicy(new iam.PolicyStatement({
+        actions: ['route53:ChangeResourceRecordSets'],
+        resources: [`arn:${cdk.Aws.PARTITION}:route53:::hostedzone/${privateHostedZoneId}`],
+        conditions: {
+          'ForAllValues:StringEquals': {
+            'route53:ChangeResourceRecordSetsRecordTypes': ['A'],
+            'route53:ChangeResourceRecordSetsActions': ['UPSERT'],
+          },
+          'ForAllValues:StringLike': {
+            'route53:ChangeResourceRecordSetsNormalizedRecordNames': [internalLoadBalancerDomain()],
+          },
+        },
+      }));
+    }
     role.addToPolicy(new iam.PolicyStatement({
       actions: ['ssm:PutParameter'],
       resources: [
@@ -170,6 +209,8 @@ export class LoadBalancerStack extends cdk.Stack {
         region: this.region,
         cloudflareZoneId: props.cloudflareZoneId,
         enableCloudWatchMetrics: props.enableCloudWatchMetrics,
+        enableInternalM2m: props.enableInternalM2m,
+        vpcIpv4Cidr: vpc.vpcCidrBlock,
         accessLogGroupName,
         artifactBucketName: props.artifactBucketName,
       }),
@@ -210,6 +251,15 @@ export class LoadBalancerStack extends cdk.Stack {
         stringValue: JSON.stringify(route),
         description: `HAProxy route for ${route.hostname}`,
       });
+      if (privateZone && route.internalHostname) {
+        new route53.CnameRecord(this, `${name}InternalAlias`, {
+          zone: privateZone,
+          recordName: route.internalHostname,
+          domainName: internalLoadBalancerDomain(),
+          ttl: cdk.Duration.seconds(30),
+          comment: `Private M2M alias for ${route.hostname}`,
+        });
+      }
     }
 
     new cdk.CfnOutput(this, 'AutoScalingGroupName', {value: asg.autoScalingGroupName});
@@ -222,5 +272,13 @@ export class LoadBalancerStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'CloudWatchMetricsEnabled', {
       value: props.enableCloudWatchMetrics ? 'true' : 'false',
     });
+    new cdk.CfnOutput(this, 'InternalM2mEnabled', {
+      value: props.enableInternalM2m ? 'true' : 'false',
+    });
+    if (props.enableInternalM2m) {
+      new cdk.CfnOutput(this, 'InternalLoadBalancerHostname', {
+        value: internalLoadBalancerDomain(),
+      });
+    }
   }
 }

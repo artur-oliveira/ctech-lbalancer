@@ -3,7 +3,15 @@ import {readFileSync} from 'node:fs';
 import {join} from 'node:path';
 import {Token} from 'aws-cdk-lib';
 import * as ec2 from 'aws-cdk-lib/aws-ec2';
-import {HAPROXY_SOURCE_SHA256, HAPROXY_VERSION, originDomainForEnv, ssmPaths} from './constants';
+import {
+  HAPROXY_SOURCE_SHA256,
+  HAPROXY_VERSION,
+  internalLoadBalancerDomain,
+  originDomainForEnv,
+  PRIVATE_HOSTED_ZONE_ID_PARAMETER,
+  PRIVATE_ZONE_NAME,
+  ssmPaths,
+} from './constants';
 import {Environment} from './types';
 
 export interface LoadBalancerUserDataProps {
@@ -11,6 +19,8 @@ export interface LoadBalancerUserDataProps {
   region: string;
   cloudflareZoneId?: string;
   enableCloudWatchMetrics: boolean;
+  enableInternalM2m: boolean;
+  vpcIpv4Cidr: string;
   accessLogGroupName: string;
   artifactBucketName: string;
 }
@@ -44,10 +54,17 @@ export function buildUserData(props: LoadBalancerUserDataProps): ec2.UserData {
     '__ORIGIN_IPV6_PATH__': paths.originIpv6,
     '__TLS_CERTIFICATE_PATH__': paths.tlsCertificate,
     '__TLS_PRIVATE_KEY_PATH__': paths.tlsPrivateKey,
+    '__INTERNAL_TLS_CERTIFICATE_PATH__': paths.internalTlsCertificate,
+    '__INTERNAL_TLS_PRIVATE_KEY_PATH__': paths.internalTlsPrivateKey,
     '__AOP_CA_PATH__': paths.aopCa,
     '__CLOUDFLARE_TOKEN_PATH__': paths.cloudflareDnsToken,
     '__CLOUDFLARE_ZONE_ID__': props.cloudflareZoneId ?? '',
     '__ORIGIN_DOMAIN__': originDomainForEnv(props.environment),
+    '__ENABLE_INTERNAL_M2M__': props.enableInternalM2m ? 'true' : 'false',
+    '__VPC_IPV4_CIDR__': props.vpcIpv4Cidr,
+    '__PRIVATE_ZONE_ID_PATH__': PRIVATE_HOSTED_ZONE_ID_PARAMETER,
+    '__PRIVATE_ZONE_NAME__': PRIVATE_ZONE_NAME,
+    '__INTERNAL_LBALANCER_DOMAIN__': internalLoadBalancerDomain(),
     '__ENABLE_CLOUDWATCH__': props.enableCloudWatchMetrics ? 'true' : 'false',
     '__ACCESS_LOG_GROUP__': props.accessLogGroupName,
     '__HAPROXY_ARTIFACT_BUCKET__': props.artifactBucketName,

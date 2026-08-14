@@ -13,6 +13,7 @@ import {
   HAPROXY_ARTIFACT_BUCKET_NAME,
   HAPROXY_SOURCE_SHA256,
   HAPROXY_VERSION,
+  internalLoadBalancerDomain,
   originDomainForEnv,
 } from '../lib/constants';
 import {LoadBalancerStack} from '../lib/load-balancer-stack';
@@ -26,12 +27,16 @@ test('pins the current HAProxy LTS patch and checksum', () => {
 test('uses API origins and the existing service ASG contracts', () => {
   const routes = defaultRoutes('prod');
   assert.equal(routes.account?.hostname, 'accounts-api.aoctech.app');
+  assert.equal(routes.account?.internalHostname, 'accounts.internal.aoctech.app');
   assert.equal(routes.account?.asg, 'prod-ctech-account');
   assert.equal(routes.dfe?.asg, 'prod-ctech-dfe');
   assert.equal(routes.wallet?.asg, 'prod-ctech-wallet');
+  assert.equal(routes.wallet?.internalHostname, 'wallet.internal.aoctech.app');
   assert.equal(routes.poker?.asg, 'prod-ctech-poker');
   assert.equal(routes.poker?.port, 8080);
   assert.equal(originDomainForEnv('stage'), 'origin-stage.aoctech.app');
+  assert.equal(defaultRoutes('stage').wallet?.internalHostname, 'wallet-stage.internal.aoctech.app');
+  assert.equal(internalLoadBalancerDomain(), 'lbalancer.internal.aoctech.app');
 });
 
 test('compressed user data stays below the EC2 16 KiB raw limit', () => {
@@ -40,11 +45,13 @@ test('compressed user data stays below the EC2 16 KiB raw limit', () => {
     region: 'us-east-1',
     cloudflareZoneId: 'zone-id',
     enableCloudWatchMetrics: false,
+    enableInternalM2m: true,
+    vpcIpv4Cidr: '10.0.0.0/16',
     accessLogGroupName: '/ctech-lbalancer/prod/access',
     artifactBucketName: '111111111111-us-east-1-ctech-lbalancer-artifacts',
   }).render();
   assert.ok(Buffer.byteLength(rendered) < 16 * 1024, `user data is ${Buffer.byteLength(rendered)} bytes`);
-  assert.doesNotMatch(rendered, /__HAPROXY_VERSION__|__AWS_REGION__|__ROUTES_PATH__/);
+  assert.doesNotMatch(rendered, /__[A-Z0-9_]+__/);
 });
 
 test('rejects unresolved CDK tokens in compressed user data', () => {
@@ -52,6 +59,8 @@ test('rejects unresolved CDK tokens in compressed user data', () => {
     environment: 'prod',
     region: 'us-east-1',
     enableCloudWatchMetrics: false,
+    enableInternalM2m: true,
+    vpcIpv4Cidr: '10.0.0.0/16',
     accessLogGroupName: '/ctech-lbalancer/prod/access',
     artifactBucketName: cdk.Token.asString({Ref: 'ArtifactBucket'}),
   }), /artifactBucketName must be a physical name/);
@@ -59,6 +68,8 @@ test('rejects unresolved CDK tokens in compressed user data', () => {
     environment: 'prod',
     region: 'us-east-1',
     enableCloudWatchMetrics: true,
+    enableInternalM2m: true,
+    vpcIpv4Cidr: '10.0.0.0/16',
     accessLogGroupName: cdk.Token.asString({Ref: 'AccessLogGroup'}),
     artifactBucketName: HAPROXY_ARTIFACT_BUCKET_NAME,
   }), /accessLogGroupName must be a physical name/);
@@ -99,7 +110,7 @@ test('reconciler keeps the jq status separator inside its filter', () => {
 test('reconciler resolves the client IP by stripping only trusted stacked-CDN hops', () => {
   const reconcile = readFileSync(join(__dirname, '..', 'assets', 'reconcile.sh'), 'utf8');
   const start = reconcile.indexOf('frontend https');
-  const end = reconcile.indexOf('frontend local_stats');
+  const end = reconcile.indexOf('frontend internal_https');
   const frontend = reconcile.slice(start, end);
 
   assert.match(frontend, /cf_connecting_is_cloudfront req\.hdr_ip\(CF-Connecting-IP\) -m ip -f \/etc\/haproxy\/cloudfront-origin-proxies\.lst/);
@@ -111,6 +122,27 @@ test('reconciler resolves the client IP by stripping only trusted stacked-CDN ho
   assert.match(frontend, /set-header X-Real-IP %\[var\(txn\.client_ip\)\]/);
   assert.ok(frontend.indexOf('req.hdr_ip(X-Forwarded-For,-3)') < frontend.indexOf('del-header X-Forwarded-For'));
   assert.doesNotMatch(frontend, /set-header X-Forwarded-For %\[req\.hdr\(CF-Connecting-IP\)\]/);
+});
+
+test('internal frontend is private-only, has independent TLS, and sanitizes proxy identity', () => {
+  const reconcile = readFileSync(join(__dirname, '..', 'assets', 'reconcile.sh'), 'utf8');
+  const start = reconcile.indexOf('frontend internal_https');
+  const end = reconcile.indexOf('frontend local_stats');
+  const frontend = reconcile.slice(start, end);
+
+  assert.match(frontend, /bind 0\.0\.0\.0:443 ssl strict-sni crt \/etc\/haproxy\/tls\/internal\.pem/);
+  assert.doesNotMatch(frontend, /verify required|aop-ca\.pem|CF-Connecting-IP\) -m found/);
+  assert.match(frontend, /del-header CF-Connecting-IP/);
+  assert.match(frontend, /del-header X-Forwarded-For/);
+  assert.match(frontend, /set-header X-Forwarded-For %\[src\]/);
+  assert.match(frontend, /internalHostname \/\/ empty/);
+  assert.match(frontend, /use_backend route_%d if internal_route_%d/);
+  assert.match(reconcile, /continuing with the last valid certificate/);
+  assert.match(reconcile, /-checkhost "\$internal_hostname"/);
+
+  const publicFrontend = reconcile.slice(reconcile.indexOf('frontend https'), start);
+  assert.doesNotMatch(publicFrontend, /internalHostname|internal_route_/);
+  assert.match(publicFrontend, /verify required/);
 });
 
 test('trusted CDN ranges use IPv6-capable refresh paths and retain safe fallbacks', () => {
@@ -126,6 +158,11 @@ test('trusted CDN ranges use IPv6-capable refresh paths and retain safe fallback
   assert.match(refresh, /15\.158\.0\.0\/16/);
   assert.match(refresh, /elif \[ -s "\$CLOUDFRONT_PROXY_LIST" \]/);
   assert.match(refresh, /haproxy -c -f \/etc\/haproxy\/haproxy\.cfg/);
+  assert.match(refresh, /tcp dport 443 ip saddr __VPC_IPV4_CIDR__ accept/);
+  assert.ok(
+    refresh.indexOf('tcp dport 443 ip saddr __VPC_IPV4_CIDR__ accept') <
+      refresh.indexOf('tcp dport 443 drop'),
+  );
   assert.match(stack, /'ec2:DescribeManagedPrefixLists'/);
   assert.match(stack, /'ec2:GetManagedPrefixListEntries'/);
 });
@@ -182,6 +219,7 @@ test('synthesizes one IPv6-only ASG and four standard route parameters', () => {
     vpcId: 'vpc-12345',
     instanceType: 't4g.nano',
     enableCloudWatchMetrics: true,
+    enableInternalM2m: true,
     artifactBucket,
     artifactBucketName: HAPROXY_ARTIFACT_BUCKET_NAME,
   });
@@ -189,9 +227,19 @@ test('synthesizes one IPv6-only ASG and four standard route parameters', () => {
   const serializedTemplate = JSON.stringify(template.toJSON());
   assert.match(serializedTemplate, /parameter\/ctech\/prod\/lbalancer\/routes"/);
   assert.match(serializedTemplate, /parameter\/ctech\/prod\/lbalancer\/routes\/\*/);
+  assert.match(serializedTemplate, /route53:ChangeResourceRecordSetsNormalizedRecordNames/);
+  assert.match(serializedTemplate, /lbalancer\.internal\.aoctech\.app/);
+  assert.match(serializedTemplate, /parameter\/ctech\/prod\/lbalancer\/tls\/internal-certificate/);
   template.resourceCountIs('AWS::AutoScaling::AutoScalingGroup', 1);
   // Account, DFE, wallet, and poker API routes.
   template.resourceCountIs('AWS::SSM::Parameter', 4);
+  template.resourceCountIs('AWS::Route53::RecordSet', 4);
+  template.hasResourceProperties('AWS::Route53::RecordSet', {
+    Name: 'wallet.internal.aoctech.app.',
+    Type: 'CNAME',
+    TTL: '30',
+    ResourceRecords: ['lbalancer.internal.aoctech.app'],
+  });
   template.hasResourceProperties('AWS::EC2::LaunchTemplate', {
     LaunchTemplateData: {
       CreditSpecification: {CpuCredits: 'standard'},

@@ -2,7 +2,7 @@
   "name": "ctech-lbalancer",
   "version": "0.1.0",
   "private": true,
-  "description": "Lowest-cost IPv6-only HAProxy edge for CTech services",
+  "description": "Low-cost Cloudflare edge and private M2M HAProxy for CTech services",
   "scripts": {
     "build": "tsc --noEmit",
     "synth": "cdk synth",

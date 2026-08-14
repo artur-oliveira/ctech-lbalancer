@@ -11,4 +11,4 @@ fi
 aws ssm delete-parameter \
   --region "${AWS_REGION:-us-east-1}" \
   --name "/ctech/$1/lbalancer/routes/$2"
-echo "Deregistered $2; HAProxy will remove it within about 30 seconds."
+echo "Deregistered $2 from HAProxy. Remove its private CNAME from the owning service CDK or Route 53 if one was created."

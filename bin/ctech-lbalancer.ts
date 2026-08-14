@@ -18,6 +18,9 @@ const vpcId = process.env.CTECH_VPC_ID || 'vpc-0adfd86727d17445b';
 const account = process.env.AWS_ACCOUNT ?? DEFAULT_AWS_ACCOUNT;
 const region = process.env.AWS_REGION ?? DEFAULT_AWS_REGION;
 const instanceType = process.env.INSTANCE_TYPE ?? 't4g.micro';
+const enableInternalM2m = (
+  process.env.ENABLE_INTERNAL_M2M ?? (environment === 'prod' ? 'true' : 'false')
+) === 'true';
 
 if (!['dev', 'stage', 'prod'].includes(environment)) {
   throw new Error(`ENVIRONMENT must be dev, stage, or prod; received ${environment}`);
@@ -48,9 +51,10 @@ new LoadBalancerStack(app, `Ctech-${cap}-LoadBalancer`, {
   instanceType,
   cloudflareZoneId: cfZoneId,
   enableCloudWatchMetrics,
+  enableInternalM2m,
   artifactBucket: artifactStack.bucket,
   artifactBucketName: HAPROXY_ARTIFACT_BUCKET_NAME,
-  description: `CTech IPv6-only HAProxy edge (${environment})`,
+  description: `CTech Cloudflare edge and private M2M HAProxy (${environment})`,
 });
 
 cdk.Tags.of(app).add('Project', 'ctech-lbalancer');

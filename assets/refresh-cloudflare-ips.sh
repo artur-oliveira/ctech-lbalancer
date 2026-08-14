@@ -143,8 +143,9 @@ mkdir -p /etc/haproxy
 install_ranges "$CLOUDFLARE_PROXY_LIST" "$cloudflare_ranges"
 install_ranges "$CLOUDFRONT_PROXY_LIST" "$cloudfront_ranges"
 
-# HAProxy only accepts IPv6 connections, so nftables needs only Cloudflare's
-# IPv6 ranges even though request-chain resolution needs both address families.
+# The public frontend accepts only Cloudflare IPv6. When private M2M is enabled,
+# the second rule admits IPv4 port 443 only from this VPC's CIDR; the instance
+# still has no public IPv4 address.
 if [ "$(valid_ranges "$downloaded_v6" | wc -l)" -ge 7 ]; then
   firewall_ranges=$downloaded_v6
 else
@@ -159,6 +160,10 @@ fi
 tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
 mkdir -p /etc/nftables
+internal_m2m_rule=''
+if [ '__ENABLE_INTERNAL_M2M__' = 'true' ]; then
+  internal_m2m_rule='    tcp dport 443 ip saddr __VPC_IPV4_CIDR__ accept'
+fi
 cat > "$tmp" <<NFT
 table inet ctech_edge {
   set cloudflare_v6 {
@@ -169,6 +174,7 @@ table inet ctech_edge {
   chain input {
     type filter hook input priority -10; policy accept;
     tcp dport 443 ip6 saddr @cloudflare_v6 accept
+${internal_m2m_rule}
     tcp dport 443 drop
   }
 }

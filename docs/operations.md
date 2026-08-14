@@ -1,5 +1,9 @@
 # Operations runbook
 
+For the separate private Route 53 and M2M HTTPS entrypoint, follow the complete
+[private M2M runbook](internal-m2m.md). The public Cloudflare/AOP procedures in
+this document remain unchanged.
+
 ## 1. Create the Cloudflare certificates
 
 Two different certificates solve two different problems:

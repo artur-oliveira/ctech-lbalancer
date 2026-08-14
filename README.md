@@ -1,14 +1,15 @@
 # ctech-lbalancer
 
-An IPv6-only, Cloudflare-only HAProxy edge intended to replace the shared AWS
-Application Load Balancer at the lowest practical AWS cost.
+A dual-entrypoint HAProxy intended to replace the shared AWS Application Load
+Balancer at the lowest practical AWS cost. Public traffic remains IPv6-only and
+Cloudflare-only; private M2M traffic can use VPC IPv4 without Cloudflare.
 
 The stack runs exactly one ARM instance in the existing CTech VPC:
 
 ```text
-browser -> Cloudflare -> IPv6:443 HAProxy -> private IPv4 -> service ASG instance
-                             |                    ^
-                             +-- SSM routes ------+
+browser -> Cloudflare -> IPv6:443 HAProxy (AOP mTLS) --+
+                                                       +-> private IPv4 -> service ASG
+service -> private DNS -> IPv4:443 HAProxy ------------+
 ```
 
 HAProxy is built from the official source tarball as version **3.4.3 LTS** and
@@ -46,9 +47,13 @@ RAM on a nano; open-source nginx needs more care for changing upstream IPs.
   reconciliations mark the instance unhealthy in its ASG, which replaces it.
 - The load balancer is itself a size-one ASG. EC2/system failure replaces it;
   the replacement updates the single Cloudflare origin AAAA record.
-- `nftables` accepts port 443 only from Cloudflare's published IPv6 ranges.
+- For the public IPv6 path, `nftables` accepts port 443 only from Cloudflare's
+  published ranges.
   HAProxy then requires a zone-specific Authenticated Origin Pull client
   certificate, so both the network source and TLS identity must be Cloudflare.
+- In production, `nftables` also accepts port 443 over IPv4 from the VPC CIDR.
+  A separate frontend and certificate route `*.internal.aoctech.app`; these
+  private names never enter the Cloudflare/public frontend.
 - Client IP resolution supports direct API traffic
   (`viewer -> Cloudflare -> HAProxy`) and same-origin frontend API traffic
   (`viewer -> Cloudflare -> CloudFront -> Cloudflare -> HAProxy`). HAProxy starts
@@ -86,6 +91,8 @@ Prerequisites: Node 24, AWS CLI credentials, the existing dual-stack CTech VPC,
 and the TLS parameters described in [docs/operations.md](docs/operations.md).
 Certificate renewal and CA rollover are documented separately in
 [docs/aop-certificate-renewal.md](docs/aop-certificate-renewal.md).
+Private M2M prerequisites, deployment, client trust, validation, and rollback
+are in [docs/internal-m2m.md](docs/internal-m2m.md).
 
 ```bash
 npm ci
@@ -95,7 +102,7 @@ export CTECH_VPC_ID="$(aws ssm get-parameter \
 export CLOUDFLARE_ZONE_ID=your_zone_id
 
 npm run build
-`npm test`
+npm test
 npm run synth
 npx cdk deploy Ctech-Prod-LoadBalancer --require-approval never
 ```
@@ -123,6 +130,7 @@ SSM parameter containing this shape:
 ```json
 {
   "hostname": "billing-api.aoctech.app",
+  "internalHostname": "billing.internal.aoctech.app",
   "asg": "prod-ctech-billing-api",
   "port": 8080,
   "healthPath": "/v1.0/health-check",
@@ -142,6 +150,7 @@ new ssm.StringParameter(this, 'LoadBalancerRoute', {
   tier: ssm.ParameterTier.STANDARD,
   stringValue: JSON.stringify({
     hostname: domainName,
+    internalHostname: `billing${environment === 'prod' ? '' : `-${environment}`}.internal.aoctech.app`,
     asg: apiAsgName,
     port: 8080,
     healthPath: '/v1.0/health-check',
@@ -151,16 +160,36 @@ new ssm.StringParameter(this, 'LoadBalancerRoute', {
 });
 ```
 
+The same service stack should own its private alias:
+
+```typescript
+const privateZone = route53.HostedZone.fromHostedZoneAttributes(this, 'PrivateZone', {
+  hostedZoneId: ssm.StringParameter.valueForStringParameter(
+    this,
+    '/ctech/global/dns/private-hosted-zone-id',
+  ),
+  zoneName: 'internal.aoctech.app',
+});
+new route53.CnameRecord(this, 'LoadBalancerInternalAlias', {
+  zone: privateZone,
+  recordName: `billing${environment === 'prod' ? '' : `-${environment}`}`,
+  domainName: 'lbalancer.internal.aoctech.app',
+  ttl: cdk.Duration.seconds(30),
+});
+```
+
 For an operational registration without a service-CDK release:
 
 ```bash
 ./scripts/register-route.sh prod billing billing-api.aoctech.app \
-  prod-ctech-billing-api 8080 /v1.0/health-check 200,207 true
+  billing.internal.aoctech.app prod-ctech-billing-api 8080 \
+  /v1.0/health-check 200,207 true
 ```
 
 Also create a proxied Cloudflare CNAME from `billing-api.aoctech.app` to
 `origin.aoctech.app`. The origin AAAA remains DNS-only and is maintained by the
-load balancer. The service security group must allow its port from the shared
+load balancer. The helper above also creates the private CNAME; service CDK
+should own it for permanent routes. The service security group must allow its port from the shared
 edge SG; current services already do this because that SG is the former ALB SG.
 
 ## Metrics
@@ -194,6 +223,7 @@ reported in milliseconds: `QueueLatencyMilliseconds`,
 | 4 GB gp3 root disk               |            about $0.32 |     about $0.32 |
 | public IPv4                      |                     $0 |              $0 |
 | SSM Standard Parameters          |                     $0 |              $0 |
+| existing private hosted zone     |          about $0.50/mo |   about $0.50/mo |
 | HAProxy S3 artifact              |                 <$0.01 |          <$0.01 |
 | local stats/Prometheus           |                     $0 |              $0 |
 | optional CloudWatch HTTP metrics |                    off |             off |
