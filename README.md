@@ -14,10 +14,10 @@ service -> private DNS -> IPv4:443 HAProxy ------------+
 
 HAProxy is built from the official source tarball as version **3.4.3 LTS** and
 verified against its pinned SHA-256. The branch is supported through 2031-Q2.
-The instance starts as `t4g.micro`; set `INSTANCE_TYPE=t4g.nano` after the free
-tier. It has no public IPv4 address. T4g Unlimited mode lets a replacement build
-the pinned proxy promptly; at this low steady load the one-time burst should be
-repaid inside the rolling 24-hour baseline.
+The instance starts as `t4g.micro`; test `INSTANCE_TYPE=t4g.nano` only after
+observing memory and CPU-credit headroom. It has no public IPv4 address and uses
+T4g Standard credits. Replacements normally download the verified cached HAProxy
+artifact instead of compiling it.
 
 ## Why HAProxy
 
@@ -112,8 +112,9 @@ The first deployment also creates the dependency stack
 access. The load-balancer role can publish only to this artifact bucket and can
 update only the version-specific artifact hash parameter.
 
-Do not delete the ALB yet. Run both paths during migration, validate the new
-origin, cut Cloudflare/CloudFront origins over, and only then remove the ALB.
+The ALB migration is complete: the shared CDK entrypoint no longer instantiates
+an ALB and the production account has no ELBv2 load balancer. `origin.aoctech.app`
+is the DNS-only AAAA maintained by this stack; proxied `*-api` CNAMEs point to it.
 
 After the EC2 free tier:
 
@@ -205,12 +206,13 @@ aws ssm start-session --target INSTANCE_ID \
 Open `http://127.0.0.1:8404/stats` or scrape `/metrics`. HAProxy exposes 2xx,
 3xx, 4xx, and 5xx counters by frontend/backend/server at no AWS metric cost.
 
-For persistent CloudWatch request counts and latency breakdowns, deploy with
-`ENABLE_CLOUDWATCH_METRICS=true`. This ships JSON access logs and creates four
+Persistent CloudWatch request counts and latency breakdowns are enabled by
+default. This ships JSON access logs and creates four
 status metric filters plus five request/latency metric filters in
-`CtechLoadBalancer/{env}`. It is deliberately opt-in because these nine custom
-metrics cost about $2.70/month before log ingestion, and the service nginx log
-groups already produce similar per-service counters. The latency metrics are
+`CtechLoadBalancer/{env}`. Set `ENABLE_CLOUDWATCH_METRICS=false` to choose the
+lowest-cost local-only mode. The nine custom metrics cost about $2.70/month
+before log ingestion, and service nginx log groups already produce similar
+per-service counters. The latency metrics are
 reported in milliseconds: `QueueLatencyMilliseconds`,
 `BackendConnectLatencyMilliseconds`, `BackendResponseLatencyMilliseconds`, and
 `TotalLatencyMilliseconds`.
@@ -226,13 +228,14 @@ reported in milliseconds: `QueueLatencyMilliseconds`,
 | existing private hosted zone     |          about $0.50/mo |   about $0.50/mo |
 | HAProxy S3 artifact              |                 <$0.01 |          <$0.01 |
 | local stats/Prometheus           |                     $0 |              $0 |
-| optional CloudWatch HTTP metrics |                    off |             off |
+| CloudWatch HTTP metrics (default) |          about $2.70/mo | about $2.70/mo |
 
 The ALB base fee alone is about $16.43/month before LCU usage. Normal EC2 data
 transfer still applies. Cross-AZ backend traffic can add regional transfer cost;
 at this workload's expected volume it should be small, but it must be watched.
-T4g surplus CPU is also billable if average use stays above the nano baseline;
-`CPUSurplusCreditsCharged > 0` means the micro is the cheaper safe size in practice.
+T4g Standard does not incur surplus-credit charges; instead it throttles after
+the credit balance is exhausted. `CPUCreditBalance`, memory, boot duration, and
+HAProxy latency must all be checked before changing to nano.
 
 ## Availability trade-off
 

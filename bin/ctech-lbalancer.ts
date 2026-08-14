@@ -12,9 +12,9 @@ import {Environment} from '../lib/types';
 
 const app = new cdk.App();
 const cfZoneId = process.env.CLOUDFLARE_ZONE_ID || DEFAULT_CLOUDFLARE_ZONE_ID;
-const enableCloudWatchMetrics = (process.env.ENABLE_CLOUDWATCH_METRICS || 'true') === 'true';
+const enableCloudWatchMetrics = (process.env.ENABLE_CLOUDWATCH_METRICS ?? 'true') === 'true';
 const environment = (process.env.ENVIRONMENT ?? 'dev') as Environment;
-const vpcId = process.env.CTECH_VPC_ID || 'vpc-0adfd86727d17445b';
+const vpcId = process.env.CTECH_VPC_ID || '';
 const account = process.env.AWS_ACCOUNT ?? DEFAULT_AWS_ACCOUNT;
 const region = process.env.AWS_REGION ?? DEFAULT_AWS_REGION;
 const instanceType = process.env.INSTANCE_TYPE ?? 't4g.micro';
