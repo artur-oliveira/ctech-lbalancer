@@ -13,12 +13,12 @@ The private entrypoint is not a second load balancer. Both frontends share the
 same HAProxy backends, active health checks, target discovery, and auto-healing.
 The default private names are:
 
-| Service | Private URL |
-|---|---|
+| Service | Private URL                             |
+|---------|-----------------------------------------|
 | Account | `https://accounts.internal.aoctech.app` |
-| DFE | `https://dfe.internal.aoctech.app` |
-| Wallet | `https://wallet.internal.aoctech.app` |
-| Poker | `https://poker.internal.aoctech.app` |
+| DFE     | `https://dfe.internal.aoctech.app`      |
+| Wallet  | `https://wallet.internal.aoctech.app`   |
+| Poker   | `https://poker.internal.aoctech.app`    |
 
 Each name is a private CNAME to `lbalancer.internal.aoctech.app`. The HAProxy
 instance reconciles that target's private `A` record with TTL 10 seconds. Do not
@@ -134,23 +134,18 @@ can point directly to that PEM instead. Never disable TLS verification.
 
 ## 4. Review, deploy, and replace the HAProxy instance
 
-Run these commands from this repository. They do not deploy until the final
-`cdk deploy` command:
+Run these commands from `terraform/lbalancer/`. They do not deploy until the
+final `terraform apply`:
 
 ```bash
-npm ci
-export ENVIRONMENT=prod
-export ENABLE_INTERNAL_M2M=true
-export CTECH_VPC_ID="$(aws ssm get-parameter \
-  --name /ctech/prod/network/vpc-id \
-  --query Parameter.Value --output text)"
-
-npm run build
-npm test
-npm run synth
-npx cdk diff Ctech-Prod-LoadBalancer
-npx cdk deploy Ctech-Prod-LoadBalancer --require-approval never
+terraform workspace select prod
+terraform plan  -var-file=environments/prod.tfvars -var='enable_internal_m2m=true'
+terraform apply -var-file=environments/prod.tfvars -var='enable_internal_m2m=true'
 ```
+
+(`enable_internal_m2m = true` is already prod's default in
+`environments/prod.tfvars` — the `-var` above is only needed to override
+another environment.)
 
 The deployment updates the launch template and creates the four private CNAMEs,
 but it does not mutate the running EC2 instance. Replace the single ASG member
@@ -171,8 +166,9 @@ aws autoscaling describe-instance-refreshes \
 
 Because this ASG has one instance, this refresh causes a short public and
 private outage while the replacement boots. Do not increase desired capacity
-ad hoc: this stack has `maxCapacity=1`, and an unmanaged change would create
-drift. A planned two-node HA design should be implemented in CDK first.
+ad hoc: this stack has `max_size = 1` in `terraform/lbalancer/compute.tf`, and
+an unmanaged change would create drift. A planned two-node HA design should be
+implemented in Terraform first.
 
 ## 5. Validate
 
@@ -258,13 +254,9 @@ To remove the private frontend and its four managed aliases from infrastructure,
 deploy with the feature disabled, then replace the instance again:
 
 ```bash
-export ENVIRONMENT=prod
-export ENABLE_INTERNAL_M2M=false
-export CTECH_VPC_ID="$(aws ssm get-parameter \
-  --name /ctech/prod/network/vpc-id \
-  --query Parameter.Value --output text)"
-npx cdk diff Ctech-Prod-LoadBalancer
-npx cdk deploy Ctech-Prod-LoadBalancer --require-approval never
+cd terraform/lbalancer
+terraform plan  -var-file=environments/prod.tfvars -var='enable_internal_m2m=false'
+terraform apply -var-file=environments/prod.tfvars -var='enable_internal_m2m=false'
 aws autoscaling start-instance-refresh \
   --auto-scaling-group-name prod-ctech-lbalancer \
   --preferences MinHealthyPercentage=0,InstanceWarmup=600

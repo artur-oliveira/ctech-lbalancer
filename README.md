@@ -87,40 +87,48 @@ its service instance) before those names can move.
 
 ## Deploy
 
-Prerequisites: Node 24, AWS CLI credentials, the existing dual-stack CTech VPC,
-and the TLS parameters described in [docs/operations.md](docs/operations.md).
-Certificate renewal and CA rollover are documented separately in
+This repo is managed with Terraform (migrated from CDK). Prerequisites:
+Terraform >= 1.15, AWS CLI credentials (`--profile ctech`), the existing
+dual-stack CTech VPC, and the TLS parameters described in
+[docs/operations.md](docs/operations.md). Certificate renewal and CA rollover
+are documented separately in
 [docs/aop-certificate-renewal.md](docs/aop-certificate-renewal.md).
 Private M2M prerequisites, deployment, client trust, validation, and rollback
 are in [docs/internal-m2m.md](docs/internal-m2m.md).
 
-```bash
-npm ci
-export ENVIRONMENT=prod
-export CTECH_VPC_ID="$(aws ssm get-parameter \
-  --name /ctech/prod/network/vpc-id --query Parameter.Value --output text)"
-export CLOUDFLARE_ZONE_ID=your_zone_id
+One-time setup, per AWS account: `./scripts/bootstrap-terraform-state.sh`
+creates the shared Terraform state bucket + lock table used by both roots
+below.
 
-npm run build
-npm test
-npm run synth
-npx cdk deploy Ctech-Prod-LoadBalancer --require-approval never
+```bash
+# 1. Account/region-wide artifact bucket — deploy once, independent of environment.
+cd terraform/artifact
+terraform init
+terraform apply
+
+# 2. Per-environment load balancer stack.
+cd ../lbalancer
+terraform init
+terraform workspace select prod || terraform workspace new prod
+terraform plan  -var-file=environments/prod.tfvars
+terraform apply -var-file=environments/prod.tfvars
 ```
 
-The first deployment also creates the dependency stack
-`Ctech-LoadBalancerArtifacts`. Its bucket has no expiration rule and no public
-access. The load-balancer role can publish only to this artifact bucket and can
+`environments/{dev,stage,prod}.tfvars` holds `vpc_id` (read from
+`/ctech/{env}/network/vpc-id`), `instance_type`, and `enable_internal_m2m` per
+environment. `terraform/artifact/` and `terraform/lbalancer/` are independent
+root modules with separate state — the artifact bucket has no expiration rule
+and no public access; the load-balancer role can publish only to it and can
 update only the version-specific artifact hash parameter.
 
-The ALB migration is complete: the shared CDK entrypoint no longer instantiates
-an ALB and the production account has no ELBv2 load balancer. `origin.aoctech.app`
+The ALB migration is complete: nothing in this account instantiates an ALB and
+the production account has no ELBv2 load balancer. `origin.aoctech.app`
 is the DNS-only AAAA maintained by this stack; proxied `*-api` CNAMEs point to it.
 
 After the EC2 free tier:
 
 ```bash
-INSTANCE_TYPE=t4g.nano npm run synth
-INSTANCE_TYPE=t4g.nano npx cdk deploy Ctech-Prod-LoadBalancer --require-approval never
+terraform apply -var-file=environments/prod.tfvars -var='instance_type=t4g.nano'
 ```
 
 ## Register a future service

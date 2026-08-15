@@ -45,7 +45,7 @@ If an RSA chain exceeds it, prefer ECC instead of paying for Advanced Parameters
 Record the certificate IDs and expiration dates, then follow
 [the AOP certificate renewal runbook](aop-certificate-renewal.md) when
 Cloudflare sends its 30-day expiration notification. Routine AOP leaf renewal
-does not require a CDK deployment. A private-CA rotation is a separate,
+does not require a Terraform deployment. A private-CA rotation is a separate,
 zone-wide procedure and must prepare every deployed environment before the
 Cloudflare certificate changes.
 
@@ -59,7 +59,8 @@ aws ssm put-parameter --type SecureString \
   --value "$(<cloudflare-dns-token.txt)" --overwrite
 ```
 
-Pass the non-secret zone ID as `CLOUDFLARE_ZONE_ID` during CDK synth/deploy.
+Pass the non-secret zone ID as `cloudflare_zone_id` (Terraform variable, in
+`environments/{env}.tfvars` or `-var`) when running `terraform apply`.
 The reconciler creates or updates:
 
 ```text

@@ -7,3 +7,6 @@ node_modules/
 coverage/
 *.tsbuildinfo
 cdk.context.json
+.terraform/
+terraform.tfstate
+*.tfvars

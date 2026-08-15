@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-export AWS_DEFAULT_REGION=__AWS_REGION__
+export AWS_DEFAULT_REGION=${aws_region}
 export AWS_USE_DUALSTACK_ENDPOINT=true
 
 STATIC_CLOUDFLARE_V4='173.245.48.0/20
@@ -98,7 +98,7 @@ install_ranges() {
   list_tmp=$(mktemp)
   valid_ranges "$ranges" > "$list_tmp"
   if [ ! -s "$list_tmp" ]; then
-    echo "Refusing to empty ${destination}" >&2
+    echo "Refusing to empty $${destination}" >&2
     rm -f "$list_tmp"
     return 1
   fi
@@ -161,20 +161,20 @@ tmp=$(mktemp)
 trap 'rm -f "$tmp"' EXIT
 mkdir -p /etc/nftables
 internal_m2m_rule=''
-if [ '__ENABLE_INTERNAL_M2M__' = 'true' ]; then
-  internal_m2m_rule='    tcp dport 443 ip saddr __VPC_IPV4_CIDR__ accept'
+if [ '${enable_internal_m2m}' = 'true' ]; then
+  internal_m2m_rule='    tcp dport 443 ip saddr ${vpc_ipv4_cidr} accept'
 fi
 cat > "$tmp" <<NFT
 table inet ctech_edge {
   set cloudflare_v6 {
     type ipv6_addr
     flags interval
-    elements = { ${elements} }
+    elements = { $${elements} }
   }
   chain input {
     type filter hook input priority -10; policy accept;
     tcp dport 443 ip6 saddr @cloudflare_v6 accept
-${internal_m2m_rule}
+$${internal_m2m_rule}
     tcp dport 443 drop
   }
 }

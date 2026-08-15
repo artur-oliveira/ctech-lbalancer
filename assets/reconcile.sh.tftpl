@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-export AWS_DEFAULT_REGION=__AWS_REGION__
+export AWS_DEFAULT_REGION=${aws_region}
 export AWS_USE_DUALSTACK_ENDPOINT=true
 
 exec 9>/run/ctech-lbalancer-reconcile.lock
@@ -27,9 +27,9 @@ certificate_matches_key() {
 
 install_external_tls() {
   local cert key ca bundle_tmp ca_tmp
-  cert=$(parameter '__TLS_CERTIFICATE_PATH__') || return 1
-  key=$(parameter '__TLS_PRIVATE_KEY_PATH__') || return 1
-  ca=$(parameter '__AOP_CA_PATH__') || return 1
+  cert=$(parameter '${tls_certificate_path}') || return 1
+  key=$(parameter '${tls_private_key_path}') || return 1
+  ca=$(parameter '${aop_ca_path}') || return 1
   [ -n "$cert" ] && [ -n "$key" ] && [ -n "$ca" ] || return 1
 
   bundle_tmp=$(mktemp)
@@ -53,8 +53,8 @@ install_external_tls() {
 
 install_internal_tls() {
   local cert key bundle_tmp
-  cert=$(parameter '__INTERNAL_TLS_CERTIFICATE_PATH__') || return 1
-  key=$(parameter '__INTERNAL_TLS_PRIVATE_KEY_PATH__') || return 1
+  cert=$(parameter '${internal_tls_certificate_path}') || return 1
+  key=$(parameter '${internal_tls_private_key_path}') || return 1
   [ -n "$cert" ] && [ -n "$key" ] || return 1
 
   bundle_tmp=$(mktemp)
@@ -78,7 +78,7 @@ if ! install_external_tls; then
 fi
 
 internal_tls_ready=false
-if [ '__ENABLE_INTERNAL_M2M__' = 'true' ]; then
+if [ '${enable_internal_m2m}' = 'true' ]; then
   if install_internal_tls; then
     internal_tls_ready=true
   elif [ -s /etc/haproxy/tls/internal.pem ] &&
@@ -91,7 +91,7 @@ if [ '__ENABLE_INTERNAL_M2M__' = 'true' ]; then
   fi
 fi
 
-routes=$(aws ssm get-parameters-by-path --path '__ROUTES_PATH__' --recursive \
+routes=$(aws ssm get-parameters-by-path --path '${routes_path}' --recursive \
   --output json | jq -ce '[.Parameters[].Value | fromjson]')
 
 jq -e '
@@ -99,7 +99,7 @@ jq -e '
     (.hostname | type == "string" and test("^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$")) and
     ((.internalHostname // null) == null or
       (.internalHostname | type == "string" and
-        test("^[a-z0-9]([a-z0-9.-]*[a-z0-9])?\\.__PRIVATE_ZONE_NAME__$"))) and
+        test("^[a-z0-9]([a-z0-9.-]*[a-z0-9])?\\.${private_zone_name}$"))) and
     (.asg | type == "string" and test("^[A-Za-z0-9+=,.@_-]+$")) and
     (.port | type == "number" and . >= 1 and . <= 65535 and floor == .) and
     (.healthPath | type == "string" and test("^/[-A-Za-z0-9._~/?=&%]*$")) and
@@ -115,16 +115,16 @@ if [ "$internal_tls_ready" = true ]; then
     if ! openssl x509 -in /etc/haproxy/tls/internal.pem -noout \
         -checkhost "$internal_hostname" >/dev/null; then
       internal_tls_ready=false
-      echo "Internal certificate does not cover ${internal_hostname}; private M2M stays closed" >&2
+      echo "Internal certificate does not cover $${internal_hostname}; private M2M stays closed" >&2
       break
     fi
   done < <(jq -r '.[] | .internalHostname // empty' <<<"$routes" | sort -u)
 fi
 
 mapfile -t asg_names < <(jq -r '.[].asg' <<<"$routes" | sort -u)
-if [ "${#asg_names[@]}" -gt 0 ]; then
+if [ "$${#asg_names[@]}" -gt 0 ]; then
   groups=$(aws autoscaling describe-auto-scaling-groups \
-    --auto-scaling-group-names "${asg_names[@]}" --output json)
+    --auto-scaling-group-names "$${asg_names[@]}" --output json)
 else
   groups='{"AutoScalingGroups":[]}'
 fi
@@ -134,8 +134,8 @@ mapfile -t instance_ids < <(jq -r '
   select(.LifecycleState == "InService" and .HealthStatus == "Healthy") |
   .InstanceId
 ' <<<"$groups" | sort -u)
-if [ "${#instance_ids[@]}" -gt 0 ]; then
-  instances=$(aws ec2 describe-instances --instance-ids "${instance_ids[@]}" --output json)
+if [ "$${#instance_ids[@]}" -gt 0 ]; then
+  instances=$(aws ec2 describe-instances --instance-ids "$${instance_ids[@]}" --output json)
 else
   instances='{"Reservations":[]}'
 fi
@@ -162,7 +162,7 @@ tls_files=(/etc/haproxy/tls/origin.pem /etc/haproxy/tls/aop-ca.pem)
 if [ "$internal_tls_ready" = true ]; then
   tls_files+=(/etc/haproxy/tls/internal.pem)
 fi
-tls_fingerprint=$(sha256sum "${tls_files[@]}" | sha256sum | cut -d' ' -f1)
+tls_fingerprint=$(sha256sum "$${tls_files[@]}" | sha256sum | cut -d' ' -f1)
 printf '# tls-fingerprint %s\n' "$tls_fingerprint" > "$new_config"
 cat >> "$new_config" <<'HAPROXY'
 global
@@ -220,7 +220,7 @@ HAPROXY
 
 route_count=$(jq 'length' <<<"$resolved")
 for ((index=0; index<route_count; index++)); do
-  hostname=$(jq -r ".[${index}].hostname" <<<"$resolved")
+  hostname=$(jq -r ".[$${index}].hostname" <<<"$resolved")
   printf '  acl route_%d hdr(host),lower -i %s\n' "$index" "$hostname" >> "$new_config"
   printf '  use_backend route_%d if route_%d\n' "$index" "$index" >> "$new_config"
 done
@@ -245,7 +245,7 @@ frontend internal_https
   log-format "{\"entrypoint\":\"internal\",\"status\":%ST,\"host\":\"%[capture.req.hdr(0),json(utf8s)]\",\"backend\":\"%b\",\"server\":\"%s\",\"bytes\":%B,\"http_method\":\"%HM\",\"http_version\":\"%HV\",\"tls_protocol\":\"%[ssl_fc_protocol,json(utf8s)]\",\"tls_cipher\":\"%[ssl_fc_cipher,json(utf8s)]\",\"request_receive_time_ms\":%TR,\"queue_time_ms\":%Tw,\"backend_connect_time_ms\":%Tc,\"backend_response_time_ms\":%Tr,\"total_time_ms\":%Ta,\"termination_state\":\"%tsc\"}"
 HAPROXY
   for ((index=0; index<route_count; index++)); do
-    internal_hostname=$(jq -r ".[${index}].internalHostname // empty" <<<"$resolved")
+    internal_hostname=$(jq -r ".[$${index}].internalHostname // empty" <<<"$resolved")
     [ -n "$internal_hostname" ] || continue
     printf '  acl internal_route_%d hdr(host),lower -i %s\n' "$index" "$internal_hostname" >> "$new_config"
     printf '  use_backend route_%d if internal_route_%d\n' "$index" "$index" >> "$new_config"
@@ -267,24 +267,24 @@ backend unknown_host
 HAPROXY
 
 for ((index=0; index<route_count; index++)); do
-  hostname=$(jq -r ".[${index}].hostname" <<<"$resolved")
-  port=$(jq -r ".[${index}].port" <<<"$resolved")
-  health_path=$(jq -r ".[${index}].healthPath" <<<"$resolved")
+  hostname=$(jq -r ".[$${index}].hostname" <<<"$resolved")
+  port=$(jq -r ".[$${index}].port" <<<"$resolved")
+  health_path=$(jq -r ".[$${index}].healthPath" <<<"$resolved")
   statuses=$(jq -r --argjson index "$index" \
     '.[$index].healthyStatuses | map(tostring) | join("|")' <<<"$resolved")
   cat >> "$new_config" <<HAPROXY
 
-backend route_${index}
+backend route_$${index}
   balance roundrobin
   option httpchk
-  http-check send meth GET uri ${health_path} ver HTTP/1.1 hdr Host ${hostname}
-  http-check expect rstatus ^(${statuses})$
+  http-check send meth GET uri $${health_path} ver HTTP/1.1 hdr Host $${hostname}
+  http-check expect rstatus ^($${statuses})$
   default-server check inter 5s fall 3 rise 2 slowstart 10s
 HAPROXY
-  target_count=$(jq ".[${index}].targets | length" <<<"$resolved")
+  target_count=$(jq ".[$${index}].targets | length" <<<"$resolved")
   for ((target_index=0; target_index<target_count; target_index++)); do
-    instance_id=$(jq -r ".[${index}].targets[${target_index}].id" <<<"$resolved")
-    private_ip=$(jq -r ".[${index}].targets[${target_index}].ip" <<<"$resolved")
+    instance_id=$(jq -r ".[$${index}].targets[$${target_index}].id" <<<"$resolved")
+    private_ip=$(jq -r ".[$${index}].targets[$${target_index}].ip" <<<"$resolved")
     printf '  server %s %s:%s\n' "$instance_id" "$private_ip" "$port" >> "$new_config"
   done
 done
@@ -304,35 +304,35 @@ fi
 # unhealthy, so the ASG replaces it. The 3-minute launch guard prevents loops.
 now=$(date +%s)
 for ((index=0; index<route_count; index++)); do
-  auto_heal=$(jq -r ".[${index}].autoHeal" <<<"$resolved")
+  auto_heal=$(jq -r ".[$${index}].autoHeal" <<<"$resolved")
   [ "$auto_heal" = 'true' ] || continue
-  hostname=$(jq -r ".[${index}].hostname" <<<"$resolved")
-  port=$(jq -r ".[${index}].port" <<<"$resolved")
-  health_path=$(jq -r ".[${index}].healthPath" <<<"$resolved")
-  target_count=$(jq ".[${index}].targets | length" <<<"$resolved")
+  hostname=$(jq -r ".[$${index}].hostname" <<<"$resolved")
+  port=$(jq -r ".[$${index}].port" <<<"$resolved")
+  health_path=$(jq -r ".[$${index}].healthPath" <<<"$resolved")
+  target_count=$(jq ".[$${index}].targets | length" <<<"$resolved")
   for ((target_index=0; target_index<target_count; target_index++)); do
-    instance_id=$(jq -r ".[${index}].targets[${target_index}].id" <<<"$resolved")
-    private_ip=$(jq -r ".[${index}].targets[${target_index}].ip" <<<"$resolved")
-    launch_time=$(jq -r ".[${index}].targets[${target_index}].launchTime" <<<"$resolved")
+    instance_id=$(jq -r ".[$${index}].targets[$${target_index}].id" <<<"$resolved")
+    private_ip=$(jq -r ".[$${index}].targets[$${target_index}].ip" <<<"$resolved")
+    launch_time=$(jq -r ".[$${index}].targets[$${target_index}].launchTime" <<<"$resolved")
     launched=$(date -d "$launch_time" +%s)
     [ $((now - launched)) -ge 180 ] || continue
     code=$(curl --silent --output /dev/null --connect-timeout 3 --max-time 5 \
-      --header "Host: ${hostname}" --write-out '%{http_code}' \
-      "http://${private_ip}:${port}${health_path}" || true)
-    if jq -e --arg code "${code:-0}" ".[${index}].healthyStatuses | index(\$code | tonumber) != null" \
+      --header "Host: $${hostname}" --write-out '%%{http_code}' \
+      "http://$${private_ip}:$${port}$${health_path}" || true)
+    if jq -e --arg code "$${code:-0}" ".[$${index}].healthyStatuses | index(\$code | tonumber) != null" \
       >/dev/null <<<"$resolved"; then
-      rm -f "$STATE_DIR/${instance_id}.failures"
+      rm -f "$STATE_DIR/$${instance_id}.failures"
       continue
     fi
     failures=0
-    [ ! -f "$STATE_DIR/${instance_id}.failures" ] || failures=$(cat "$STATE_DIR/${instance_id}.failures")
+    [ ! -f "$STATE_DIR/$${instance_id}.failures" ] || failures=$(cat "$STATE_DIR/$${instance_id}.failures")
     failures=$((failures + 1))
-    printf '%s\n' "$failures" > "$STATE_DIR/${instance_id}.failures"
+    printf '%s\n' "$failures" > "$STATE_DIR/$${instance_id}.failures"
     if [ "$failures" -ge 3 ]; then
       aws autoscaling set-instance-health --instance-id "$instance_id" \
         --health-status Unhealthy --should-respect-grace-period
-      rm -f "$STATE_DIR/${instance_id}.failures"
-      echo "Marked unhealthy target ${instance_id} after ${failures} failed checks" >&2
+      rm -f "$STATE_DIR/$${instance_id}.failures"
+      echo "Marked unhealthy target $${instance_id} after $${failures} failed checks" >&2
     fi
   done
 done
@@ -345,15 +345,15 @@ imds_token=$(curl --silent --fail --max-time 2 -X PUT \
 if [ -n "$imds_token" ]; then
   if [ "$internal_tls_ready" = true ]; then
     private_ipv4=$(curl --silent --fail --max-time 2 \
-      -H "X-aws-ec2-metadata-token: ${imds_token}" \
+      -H "X-aws-ec2-metadata-token: $${imds_token}" \
       http://169.254.169.254/latest/meta-data/local-ipv4 || true)
-    private_zone_id=$(parameter '__PRIVATE_ZONE_ID_PATH__' || true)
+    private_zone_id=$(parameter '${private_zone_id_path}' || true)
     private_dns_state="$STATE_DIR/internal-dns-ipv4"
     old_private_ipv4=''
     [ ! -f "$private_dns_state" ] || old_private_ipv4=$(cat "$private_dns_state")
     if [ -n "$private_ipv4" ] && [ -n "$private_zone_id" ] && \
         [ "$private_ipv4" != "$old_private_ipv4" ]; then
-      change_batch=$(jq -cn --arg name '__INTERNAL_LBALANCER_DOMAIN__' \
+      change_batch=$(jq -cn --arg name '${internal_lbalancer_domain}' \
         --arg value "$private_ipv4" '{Changes:[{Action:"UPSERT",ResourceRecordSet:{
           Name:$name,Type:"A",TTL:10,ResourceRecords:[{Value:$value}]
         }}]}')
@@ -366,36 +366,36 @@ if [ -n "$imds_token" ]; then
     fi
   fi
 
-  mac=$(curl --silent --fail --max-time 2 -H "X-aws-ec2-metadata-token: ${imds_token}" \
+  mac=$(curl --silent --fail --max-time 2 -H "X-aws-ec2-metadata-token: $${imds_token}" \
     http://169.254.169.254/latest/meta-data/mac || true)
-  ipv6=$(curl --silent --fail --max-time 2 -H "X-aws-ec2-metadata-token: ${imds_token}" \
-    "http://169.254.169.254/latest/meta-data/network/interfaces/macs/${mac}/ipv6s" \
+  ipv6=$(curl --silent --fail --max-time 2 -H "X-aws-ec2-metadata-token: $${imds_token}" \
+    "http://169.254.169.254/latest/meta-data/network/interfaces/macs/$${mac}/ipv6s" \
     | head -n 1 || true)
   if [ -n "$ipv6" ]; then
-    aws ssm put-parameter --name '__ORIGIN_IPV6_PATH__' --type String \
+    aws ssm put-parameter --name '${origin_ipv6_path}' --type String \
       --value "$ipv6" --overwrite >/dev/null
-    if [ -n '__CLOUDFLARE_ZONE_ID__' ]; then
-      cf_token=$(parameter '__CLOUDFLARE_TOKEN_PATH__' || true)
+    if [ -n '${cloudflare_zone_id}' ]; then
+      cf_token=$(parameter '${cloudflare_token_path}' || true)
       if [ -n "$cf_token" ]; then
-        api="https://api.cloudflare.com/client/v4/zones/__CLOUDFLARE_ZONE_ID__/dns_records"
+        api="https://api.cloudflare.com/client/v4/zones/${cloudflare_zone_id}/dns_records"
         if record=$(curl --fail --silent --show-error --max-time 10 \
-            -H "Authorization: Bearer ${cf_token}" \
-            "${api}?type=AAAA&name=__ORIGIN_DOMAIN__"); then
+            -H "Authorization: Bearer $${cf_token}" \
+            "$${api}?type=AAAA&name=${origin_domain}"); then
           record_id=$(jq -r '.result[0].id // empty' <<<"$record")
           old_content=$(jq -r '.result[0].content // empty' <<<"$record")
           old_proxied=$(jq -r '.result[0].proxied // empty' <<<"$record")
-          body=$(jq -cn --arg name '__ORIGIN_DOMAIN__' --arg content "$ipv6" \
+          body=$(jq -cn --arg name '${origin_domain}' --arg content "$ipv6" \
             '{type:"AAAA",name:$name,content:$content,ttl:60,proxied:false}')
           if [ -n "$record_id" ] && \
               { [ "$old_content" != "$ipv6" ] || [ "$old_proxied" != 'false' ]; }; then
             curl --fail --silent --show-error --max-time 10 -X PUT \
-              -H "Authorization: Bearer ${cf_token}" \
+              -H "Authorization: Bearer $${cf_token}" \
               -H 'Content-Type: application/json' --data "$body" \
-              "${api}/${record_id}" >/dev/null || \
+              "$${api}/$${record_id}" >/dev/null || \
               echo 'Cloudflare origin AAAA update failed; HAProxy remains active' >&2
           elif [ -z "$record_id" ]; then
             curl --fail --silent --show-error --max-time 10 -X POST \
-              -H "Authorization: Bearer ${cf_token}" \
+              -H "Authorization: Bearer $${cf_token}" \
               -H 'Content-Type: application/json' --data "$body" "$api" >/dev/null || \
               echo 'Cloudflare origin AAAA creation failed; HAProxy remains active' >&2
           fi

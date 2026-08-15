@@ -4,7 +4,7 @@ This runbook renews the **client certificate that Cloudflare presents to
 HAProxy**. It is not the Cloudflare Origin CA server certificate that HAProxy
 presents to Cloudflare.
 
-No CDK deployment or HAProxy upgrade is required for a normal renewal. Start
+No Terraform deployment or HAProxy upgrade is required for a normal renewal. Start
 when Cloudflare sends the 30-day expiry notification; do not wait for the
 14-day notification.
 
@@ -13,23 +13,23 @@ when Cloudflare sends the 30-day expiry notification; do not wait for the
 Record these values when creating or renewing the certificate. Keep private-key
 locations in a password manager or secrets inventory, not in this repository.
 
-| Item | Value |
-|---|---|
-| Cloudflare zone | `aoctech.app` |
-| Cloudflare certificate ID | `<record after upload>` |
-| AOP leaf expiry | `<record after upload>` |
-| Root CA expiry | `<openssl x509 -in rootca.crt -noout -enddate>` |
-| Encrypted offline root key | `<secure backup location>` |
-| Cloudflare AOP enabled | `<verified date>` |
+| Item                       | Value                                           |
+|----------------------------|-------------------------------------------------|
+| Cloudflare zone            | `aoctech.app`                                   |
+| Cloudflare certificate ID  | `<record after upload>`                         |
+| AOP leaf expiry            | `<record after upload>`                         |
+| Root CA expiry             | `<openssl x509 -in rootca.crt -noout -enddate>` |
+| Encrypted offline root key | `<secure backup location>`                      |
+| Cloudflare AOP enabled     | `<verified date>`                               |
 
 The files have different roles:
 
-| File | Where it belongs |
-|---|---|
-| `cert.crt` | Upload to Cloudflare as the AOP client certificate |
-| `cert.key` | Upload to Cloudflare; keep only an encrypted offline backup |
+| File         | Where it belongs                                              |
+|--------------|---------------------------------------------------------------|
+| `cert.crt`   | Upload to Cloudflare as the AOP client certificate            |
+| `cert.key`   | Upload to Cloudflare; keep only an encrypted offline backup   |
 | `rootca.crt` | HAProxy trust store through the per-environment SSM parameter |
-| `rootca.key` | Encrypted offline only; never upload to Cloudflare or AWS |
+| `rootca.key` | Encrypted offline only; never upload to Cloudflare or AWS     |
 
 ## Preferred renewal: reuse the existing CA
 
@@ -256,4 +256,5 @@ or `/ctech/{environment}/lbalancer/tls/aop-ca`.
 - [Cloudflare zone-level Authenticated Origin Pull setup](https://developers.cloudflare.com/ssl/origin-configuration/authenticated-origin-pull/set-up/zone-level/)
 - [Cloudflare Origin TLS Client Auth API](https://developers.cloudflare.com/api/resources/origin_tls_client_auth/)
 - [AWS Systems Manager Parameter Store tiers](https://docs.aws.amazon.com/systems-manager/latest/userguide/parameter-store-advanced-parameters.html)
-- [AWS `DeleteParameter` wait requirement](https://docs.aws.amazon.com/systems-manager/latest/APIReference/API_DeleteParameter.html)
+- [AWS
+  `DeleteParameter` wait requirement](https://docs.aws.amazon.com/systems-manager/latest/APIReference/API_DeleteParameter.html)
