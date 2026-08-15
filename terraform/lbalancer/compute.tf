@@ -103,7 +103,18 @@ resource "aws_launch_template" "this" {
   tag_specifications {
     resource_type = "instance"
     tags = {
-      Name = "${var.environment}-ctech-lbalancer${var.resource_suffix}"
+      Name        = "${var.environment}-ctech-lbalancer${var.resource_suffix}"
+      Environment = var.environment
+      Project     = "ctech-lbalancer"
+    }
+  }
+
+  tag_specifications {
+    resource_type = "volume"
+    tags = {
+      Name        = "${var.environment}-ctech-lbalancer${var.resource_suffix}"
+      Environment = var.environment
+      Project     = "ctech-lbalancer"
     }
   }
 
@@ -128,6 +139,18 @@ resource "aws_autoscaling_group" "this" {
   tag {
     key                 = "Name"
     value               = "${var.environment}-ctech-lbalancer${var.resource_suffix}"
+    propagate_at_launch = true
+  }
+
+  tag {
+    key                 = "Environment"
+    value               = var.environment
+    propagate_at_launch = true
+  }
+
+  tag {
+    key                 = "Project"
+    value               = "ctech-lbalancer"
     propagate_at_launch = true
   }
 
