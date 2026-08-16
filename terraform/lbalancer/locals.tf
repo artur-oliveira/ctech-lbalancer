@@ -22,7 +22,7 @@ locals {
   }
 
   # domainForEnv(env, prefix)
-  domain_for_env = { for prefix in ["origin", "accounts-api", "dfe-api", "wallet-api", "poker-api"] :
+  domain_for_env = { for prefix in ["origin", "accounts-api", "dfe-api", "wallet-api", "poker-api", "billing-api"] :
     prefix => var.environment == "prod" ? "${prefix}.${local.base_domain}" : "${prefix}-${var.environment}.${local.base_domain}"
   }
   origin_domain = local.domain_for_env["origin"]
@@ -30,7 +30,7 @@ locals {
   internal_lbalancer_domain = "lbalancer.${local.private_zone_name}"
 
   # internalServiceDomain(env, prefix)
-  internal_service_domain = { for prefix in ["accounts", "dfe", "wallet", "poker"] :
+  internal_service_domain = { for prefix in ["accounts", "dfe", "wallet", "poker", "billing"] :
     prefix => var.environment == "prod" ? "${prefix}.${local.private_zone_name}" : "${prefix}-${var.environment}.${local.private_zone_name}"
   }
 
@@ -51,7 +51,7 @@ locals {
       asg               = "${var.environment}-ctech-dfe"
       port              = 8080
       health_path       = "/v1.0/health-check"
-      healthy_statuses  = [200, 207]
+      healthy_statuses  = [200]
       auto_heal         = true
     }
     wallet = {
@@ -60,7 +60,7 @@ locals {
       asg               = "${var.environment}-ctech-wallet"
       port              = 8080
       health_path       = "/v1.0/health-check"
-      healthy_statuses  = [200, 207]
+      healthy_statuses  = [200]
       auto_heal         = true
     }
     poker = {
@@ -69,7 +69,16 @@ locals {
       asg               = "${var.environment}-ctech-poker"
       port              = 8080
       health_path       = "/v1.0/health-check"
-      healthy_statuses  = [200, 207]
+      healthy_statuses  = [200]
+      auto_heal         = true
+    }
+    billing = {
+      hostname          = local.domain_for_env["billing-api"]
+      internal_hostname = local.internal_service_domain["billing"]
+      asg               = "${var.environment}-ctech-billing"
+      port              = 8080
+      health_path       = "/v1.0/health-check"
+      healthy_statuses  = [200]
       auto_heal         = true
     }
   }
