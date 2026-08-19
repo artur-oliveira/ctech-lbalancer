@@ -243,6 +243,7 @@ for ((index=0; index<route_count; index++)); do
     printf '  http-request set-var(txn.cors_credentials) str(true) if route_%d origin_allowed_%d\n' "$index" "$index" >> "$new_config"
     ;;
   esac
+  printf '  http-request return status 204 hdr Access-Control-Allow-Origin %%[var(txn.cors_origin)] hdr Access-Control-Allow-Credentials true hdr Access-Control-Allow-Methods "GET,POST,PUT,PATCH,DELETE,OPTIONS" hdr Access-Control-Allow-Headers "Authorization,Content-Type" hdr Access-Control-Max-Age 86400 hdr Vary Origin if route_%d METH_OPTIONS { var(txn.cors_origin) -m found } { nbsrv(route_%d) eq 0 }\n' "$index" "$index" >> "$new_config"
   printf '  use_backend route_%d if route_%d\n' "$index" "$index" >> "$new_config"
 done
 printf '  default_backend unknown_host\n' >> "$new_config"

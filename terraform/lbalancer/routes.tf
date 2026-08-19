@@ -1,7 +1,7 @@
 # Port of load-balancer-stack.ts:247-263 (default route SSM parameters + private CNAMEs).
 
 resource "aws_ssm_parameter" "route" {
-  for_each = var.manage_routes ? local.default_routes : {}
+  for_each = { for k, v in local.default_routes : k => v if var.manage_routes }
   name     = "${local.ssm_paths.routes}/${each.key}"
   type     = "String"
   tier     = "Standard"
@@ -18,7 +18,7 @@ resource "aws_ssm_parameter" "route" {
 }
 
 resource "aws_route53_record" "route_internal_alias" {
-  for_each = (var.enable_internal_m2m && var.manage_routes) ? local.default_routes : {}
+  for_each = { for k, v in local.default_routes : k => v if var.enable_internal_m2m && var.manage_routes }
   zone_id  = data.aws_route53_zone.private[0].zone_id
   name     = each.value.internal_hostname
   type     = "CNAME"
