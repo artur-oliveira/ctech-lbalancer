@@ -8,6 +8,7 @@ resource "aws_ssm_parameter" "route" {
   value = jsonencode({
     hostname         = each.value.hostname
     internalHostname = each.value.internal_hostname
+    corsOrigin       = each.value.cors_origin
     asg              = each.value.asg
     port             = each.value.port
     healthPath       = each.value.health_path

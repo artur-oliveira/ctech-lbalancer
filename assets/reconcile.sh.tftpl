@@ -100,6 +100,10 @@ jq -e '
     ((.internalHostname // null) == null or
       (.internalHostname | type == "string" and
         test("^[a-z0-9]([a-z0-9.-]*[a-z0-9])?\\.${private_zone_name}$"))) and
+    ((.corsOrigin // null) == null or
+      (.corsOrigin | type == "string" and test("^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$")) or
+      (.corsOrigin | type == "array" and length > 0 and
+        all(.[]; type == "string" and test("^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$")))) and
     (.asg | type == "string" and test("^[A-Za-z0-9+=,.@_-]+$")) and
     (.port | type == "number" and . >= 1 and . <= 65535 and floor == .) and
     (.healthPath | type == "string" and test("^/[-A-Za-z0-9._~/?=&%]*$")) and
@@ -221,10 +225,32 @@ HAPROXY
 route_count=$(jq 'length' <<<"$resolved")
 for ((index=0; index<route_count; index++)); do
   hostname=$(jq -r ".[$${index}].hostname" <<<"$resolved")
+  cors_type=$(jq -r ".[$${index}].corsOrigin | type" <<<"$resolved")
   printf '  acl route_%d hdr(host),lower -i %s\n' "$index" "$hostname" >> "$new_config"
+  case "$cors_type" in
+  string)
+    cors_origin=$(jq -r ".[$${index}].corsOrigin" <<<"$resolved")
+    printf '  http-request set-var(txn.cors_origin) str(%s) if route_%d\n' "$cors_origin" "$index" >> "$new_config"
+    printf '  http-request set-var(txn.cors_credentials) str(true) if route_%d\n' "$index" >> "$new_config"
+    ;;
+  array)
+    # Multiple known SPAs legitimately call this host cross-origin (e.g.
+    # accounts-api's /token). Reflect Origin only when it matches one of
+    # them by exact, case-insensitive string match; never a wildcard.
+    mapfile -t cors_origins < <(jq -r ".[$${index}].corsOrigin[]" <<<"$resolved")
+    printf '  acl origin_allowed_%d hdr(origin),lower -m str %s\n' "$index" "$${cors_origins[*]}" >> "$new_config"
+    printf '  http-request set-var(txn.cors_origin) req.hdr(origin) if route_%d origin_allowed_%d\n' "$index" "$index" >> "$new_config"
+    printf '  http-request set-var(txn.cors_credentials) str(true) if route_%d origin_allowed_%d\n' "$index" "$index" >> "$new_config"
+    ;;
+  esac
   printf '  use_backend route_%d if route_%d\n' "$index" "$index" >> "$new_config"
 done
 printf '  default_backend unknown_host\n' >> "$new_config"
+cat >> "$new_config" <<'HAPROXY'
+  http-after-response set-header Access-Control-Allow-Origin %[var(txn.cors_origin)] if { var(txn.cors_origin) -m found } { status 503 }
+  http-after-response set-header Access-Control-Allow-Credentials true if { var(txn.cors_credentials) -m found } { status 503 }
+  http-after-response set-header Vary Origin if { var(txn.cors_origin) -m found } { status 503 }
+HAPROXY
 
 if [ "$internal_tls_ready" = true ]; then
   cat >> "$new_config" <<'HAPROXY'

@@ -22,10 +22,23 @@ locals {
   }
 
   # domainForEnv(env, prefix)
-  domain_for_env = { for prefix in ["origin", "accounts-api", "dfe-api", "wallet-api", "poker-api", "billing-api"] :
+  domain_for_env = { for prefix in [
+    "origin", "accounts-api", "dfe-api", "wallet-api", "poker-api", "billing-api",
+    "accounts", "dfe", "wallet", "poker", "billing",
+  ] :
     prefix => var.environment == "prod" ? "${prefix}.${local.base_domain}" : "${prefix}-${var.environment}.${local.base_domain}"
   }
   origin_domain = local.domain_for_env["origin"]
+
+  # Existing SPA hosts allowed to send credentialed cross-origin requests to
+  # accounts-api's /token endpoint.
+  spa_origins = [
+    local.domain_for_env["dfe"],
+    local.domain_for_env["wallet"],
+    local.domain_for_env["accounts"],
+    local.domain_for_env["billing"],
+    local.domain_for_env["poker"],
+  ]
 
   internal_lbalancer_domain = "lbalancer.${local.private_zone_name}"
 
@@ -39,6 +52,9 @@ locals {
     account = {
       hostname          = local.domain_for_env["accounts-api"]
       internal_hostname = local.internal_service_domain["accounts"]
+      # /token is called cross-origin by every existing SPA; allowlist them
+      # by name rather than reflecting any Origin.
+      cors_origin       = local.spa_origins
       asg               = "${var.environment}-ctech-account"
       port              = 8080
       health_path       = "/v1.0/health-check"
@@ -48,6 +64,7 @@ locals {
     dfe = {
       hostname          = local.domain_for_env["dfe-api"]
       internal_hostname = local.internal_service_domain["dfe"]
+      cors_origin       = local.domain_for_env["dfe"]
       asg               = "${var.environment}-ctech-dfe"
       port              = 8080
       health_path       = "/v1.0/health-check"
@@ -57,6 +74,7 @@ locals {
     wallet = {
       hostname          = local.domain_for_env["wallet-api"]
       internal_hostname = local.internal_service_domain["wallet"]
+      cors_origin       = local.domain_for_env["wallet"]
       asg               = "${var.environment}-ctech-wallet"
       port              = 8080
       health_path       = "/v1.0/health-check"
@@ -66,6 +84,7 @@ locals {
     poker = {
       hostname          = local.domain_for_env["poker-api"]
       internal_hostname = local.internal_service_domain["poker"]
+      cors_origin       = local.domain_for_env["poker"]
       asg               = "${var.environment}-ctech-poker"
       port              = 8080
       health_path       = "/v1.0/health-check"
@@ -75,6 +94,7 @@ locals {
     billing = {
       hostname          = local.domain_for_env["billing-api"]
       internal_hostname = local.internal_service_domain["billing"]
+      cors_origin       = local.domain_for_env["billing"]
       asg               = "${var.environment}-ctech-billing"
       port              = 8080
       health_path       = "/v1.0/health-check"
