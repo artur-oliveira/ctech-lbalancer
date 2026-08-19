@@ -15,10 +15,10 @@ variable "vpc_id" {
 
 variable "instance_type" {
   type    = string
-  default = "t4g.micro"
+  default = "t4g.nano"
   validation {
-    condition     = contains(["t4g.nano", "t4g.micro"], var.instance_type)
-    error_message = "instance_type must be t4g.micro or t4g.nano."
+    condition     = contains(["t4g.nano", "t4g.nano"], var.instance_type)
+    error_message = "instance_type must be t4g.nano or t4g.nano."
   }
 }
 

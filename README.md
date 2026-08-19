@@ -14,7 +14,7 @@ service -> private DNS -> IPv4:443 HAProxy ------------+
 
 HAProxy is built from the official source tarball as version **3.4.3 LTS** and
 verified against its pinned SHA-256. The branch is supported through 2031-Q2.
-The instance starts as `t4g.micro`; test `INSTANCE_TYPE=t4g.nano` only after
+The instance starts as `t4g.nano`; test `INSTANCE_TYPE=t4g.nano` only after
 observing memory and CPU-credit headroom. It has no public IPv4 address and uses
 T4g Standard credits. Replacements normally download the verified cached HAProxy
 artifact instead of compiling it.
@@ -229,7 +229,7 @@ reported in milliseconds: `QueueLatencyMilliseconds`,
 
 | Item                             |       During free tier | After free tier |
 |----------------------------------|-----------------------:|----------------:|
-| t4g.micro / t4g.nano             | eligible / about $6.13 |     about $3.07 |
+| t4g.nano / t4g.nano             | eligible / about $6.13 |     about $3.07 |
 | 4 GB gp3 root disk               |            about $0.32 |     about $0.32 |
 | public IPv4                      |                     $0 |              $0 |
 | SSM Standard Parameters          |                     $0 |              $0 |
