@@ -31,6 +31,8 @@ locals {
     access_log_group              = local.access_log_group_name
     haproxy_artifact_bucket       = data.aws_s3_bucket.artifacts.bucket
     haproxy_artifact_sha256_path  = local.ssm_paths.haproxy_artifact_sha256
+    ec2_scripts_bucket            = data.aws_ssm_parameter.ec2_scripts_bucket.value
+    ec2_scripts_version           = data.aws_ssm_parameter.ec2_scripts_version.value
   }
 
   reconcile_sh              = templatefile("${path.module}/../../assets/reconcile.sh.tftpl", local.userdata_template_vars)
@@ -169,6 +171,17 @@ data "aws_subnets" "public" {
   tags = {
     "aws-cdk:subnet-type" = "Public"
   }
+}
+
+# The shared bootstrap scripts published by ctech-cdk's Ec2ScriptsStack. The
+# version is the content hash of its assets/ec2 directory and is also the S3 key
+# prefix, so a script edit versions this launch template.
+data "aws_ssm_parameter" "ec2_scripts_bucket" {
+  name = "/ctech/${var.environment}/ec2-scripts/bucket"
+}
+
+data "aws_ssm_parameter" "ec2_scripts_version" {
+  name = "/ctech/${var.environment}/ec2-scripts/version"
 }
 
 data "aws_ssm_parameter" "al2023_arm64_ami" {

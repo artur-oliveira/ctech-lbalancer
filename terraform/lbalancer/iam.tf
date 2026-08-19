@@ -88,6 +88,13 @@ data "aws_iam_policy_document" "instance" {
     resources = ["${data.aws_s3_bucket.artifacts.arn}/*"]
   }
 
+  # The shared bootstrap scripts published by ctech-cdk's Ec2ScriptsStack.
+  statement {
+    sid       = "ReadSharedEc2BootstrapScripts"
+    actions   = ["s3:GetObject"]
+    resources = ["arn:aws:s3:::${var.environment}-ctech-ec2-scripts/*"]
+  }
+
   statement {
     sid = "ReconcileDiscovery"
     actions = [
