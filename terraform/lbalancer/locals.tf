@@ -25,7 +25,7 @@ locals {
   domain_for_env = { for prefix in [
     "origin", "accounts-api", "dfe-api", "wallet-api", "poker-api", "billing-api",
     "accounts", "dfe", "wallet", "poker", "billing",
-  ] :
+    ] :
     prefix => var.environment == "prod" ? "${prefix}.${local.base_domain}" : "${prefix}-${var.environment}.${local.base_domain}"
   }
   origin_domain = local.domain_for_env["origin"]
@@ -54,12 +54,12 @@ locals {
       internal_hostname = local.internal_service_domain["accounts"]
       # /token is called cross-origin by every existing SPA; allowlist them
       # by name rather than reflecting any Origin.
-      cors_origin       = local.spa_origins
-      asg               = "${var.environment}-ctech-account"
-      port              = 8080
-      health_path       = "/v1.0/health-check"
-      healthy_statuses  = [200]
-      auto_heal         = true
+      cors_origin      = local.spa_origins
+      asg              = "${var.environment}-ctech-account"
+      port             = 8080
+      health_path      = "/v1.0/health-check"
+      healthy_statuses = [200]
+      auto_heal        = true
     }
     dfe = {
       hostname          = local.domain_for_env["dfe-api"]
@@ -103,21 +103,4 @@ locals {
     }
   }
 
-  access_log_group_name = "/ctech-lbalancer/${var.environment}/access${var.resource_suffix}"
-
-  status_metric_patterns = {
-    HTTP2XX = "{ ($.status >= 200) && ($.status < 300) }"
-    HTTP3XX = "{ ($.status >= 300) && ($.status < 400) }"
-    HTTP4XX = "{ ($.status >= 400) && ($.status < 500) }"
-    HTTP5XX = "{ $.status >= 500 }"
-  }
-
-  # [pattern, metric_value, unit]
-  request_metric_patterns = {
-    RequestTotal                       = { pattern = "{ $.status = * }", value = "1", unit = "Count" }
-    TotalLatencyMilliseconds           = { pattern = "{ $.total_time_ms = * }", value = "$.total_time_ms", unit = "Milliseconds" }
-    QueueLatencyMilliseconds           = { pattern = "{ $.queue_time_ms = * }", value = "$.queue_time_ms", unit = "Milliseconds" }
-    BackendConnectLatencyMilliseconds  = { pattern = "{ $.backend_connect_time_ms = * }", value = "$.backend_connect_time_ms", unit = "Milliseconds" }
-    BackendResponseLatencyMilliseconds = { pattern = "{ $.backend_response_time_ms = * }", value = "$.backend_response_time_ms", unit = "Milliseconds" }
-  }
 }

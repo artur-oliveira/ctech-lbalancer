@@ -31,7 +31,7 @@ variable "cloudflare_zone_id" {
   }
 }
 
-variable "enable_cloudwatch_metrics" {
+variable "enable_ssm_agent" {
   type    = bool
   default = true
 }

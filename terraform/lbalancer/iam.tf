@@ -19,7 +19,10 @@ resource "aws_iam_role" "instance" {
   }
 }
 
+# Only Session Manager needs this. Parameter Store reads use the inline policy
+# below, so dropping it does not affect bootstrap.
 resource "aws_iam_role_policy_attachment" "ssm_managed_instance_core" {
+  count      = var.enable_ssm_agent ? 1 : 0
   role       = aws_iam_role.instance.name
   policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 

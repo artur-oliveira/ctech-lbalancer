@@ -26,8 +26,8 @@ output "haproxy_artifact_hash_parameter" {
   value = local.ssm_paths.haproxy_artifact_sha256
 }
 
-output "cloudwatch_metrics_enabled" {
-  value = var.enable_cloudwatch_metrics
+output "ssm_agent_enabled" {
+  value = var.enable_ssm_agent
 }
 
 output "internal_m2m_enabled" {

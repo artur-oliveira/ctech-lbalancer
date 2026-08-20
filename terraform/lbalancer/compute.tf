@@ -27,8 +27,7 @@ locals {
     private_zone_id_path          = local.private_hosted_zone_id_parameter
     private_zone_name             = local.private_zone_name
     internal_lbalancer_domain     = local.internal_lbalancer_domain
-    enable_cloudwatch             = tostring(var.enable_cloudwatch_metrics)
-    access_log_group              = local.access_log_group_name
+    enable_ssm_agent              = tostring(var.enable_ssm_agent)
     haproxy_artifact_bucket       = data.aws_s3_bucket.artifacts.bucket
     haproxy_artifact_sha256_path  = local.ssm_paths.haproxy_artifact_sha256
     ec2_scripts_bucket            = data.aws_ssm_parameter.ec2_scripts_bucket.value

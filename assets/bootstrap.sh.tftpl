@@ -9,8 +9,8 @@ ctech_run(){ s="$1"; shift; aws s3 cp "$CTECH_SCRIPTS/$s" "/tmp/$s" >/dev/null; 
 
 # Only the two shared scripts that fit this instance are used. setup-base.sh and
 # setup-dualstack.sh are deliberately not: this box has no `webapp` user, no
-# /opt/app, no nginx, it installs the CloudWatch agent conditionally, and its SSM
-# agent config pins an explicit Region that setup-dualstack.sh does not write.
+# /opt/app, no nginx, it installs the SSM agent conditionally, and its SSM agent
+# config pins an explicit Region that setup-dualstack.sh does not write.
 #
 # A small swap file is deliberate: t4g.nano has 512 MiB and the compiler is only
 # used at first boot, but swap also prevents an avoidable OOM during log bursts.
@@ -18,20 +18,26 @@ ctech_run setup-swap.sh 512
 
 # AL2023 Minimal already provides the curl command through curl-minimal. Asking
 # DNF for the full curl package conflicts with curl-minimal and aborts cloud-init.
-RUNTIME_PACKAGES=(jq nftables rsyslog amazon-ssm-agent libxcrypt openssl-libs pcre2 zlib)
-if [ '${enable_cloudwatch}' = 'true' ]; then
-  RUNTIME_PACKAGES+=(amazon-cloudwatch-agent)
+RUNTIME_PACKAGES=(jq nftables rsyslog libxcrypt openssl-libs pcre2 zlib)
+if [ '${enable_ssm_agent}' = 'true' ]; then
+  RUNTIME_PACKAGES+=(amazon-ssm-agent)
 fi
 dnf install -y "$${RUNTIME_PACKAGES[@]}" tar gzip
 
 # Bring up the recovery path before the comparatively slow HAProxy source build.
 # A later bootstrap failure must not leave an otherwise-running instance outside
 # Session Manager.
-cat > /etc/amazon/ssm/amazon-ssm-agent.json <<'SSM'
+if [ '${enable_ssm_agent}' = 'true' ]; then
+  cat > /etc/amazon/ssm/amazon-ssm-agent.json <<'SSM'
 { "Agent": { "Region": "${aws_region}", "UseDualStackEndpoint": true } }
 SSM
-systemctl enable amazon-ssm-agent
-systemctl restart amazon-ssm-agent
+  systemctl enable amazon-ssm-agent
+  systemctl restart amazon-ssm-agent
+else
+  # The minimal AMI does not ship the agent today, but a future base image might;
+  # stopping it here keeps the ~70 MiB off a 512 MiB instance either way.
+  systemctl disable --now amazon-ssm-agent 2>/dev/null || true
+fi
 
 if ! id haproxy >/dev/null 2>&1; then
   useradd --system --home-dir /var/lib/haproxy --shell /sbin/nologin haproxy
@@ -152,23 +158,6 @@ cat > /etc/logrotate.d/ctech-lbalancer <<'LOGROTATE'
   copytruncate
 }
 LOGROTATE
-
-if [ '${enable_cloudwatch}' = 'true' ]; then
-  mkdir -p /etc/systemd/system/amazon-cloudwatch-agent.service.d
-  cat > /etc/systemd/system/amazon-cloudwatch-agent.service.d/override.conf <<'CWAENV'
-[Service]
-Environment=AWS_USE_DUALSTACK_ENDPOINT=true
-CWAENV
-  cat > /tmp/cwagent.json <<'CWA'
-{
-  "agent": {"run_as_user":"root"},
-  "logs": {"logs_collected":{"files":{"collect_list":[
-    {"file_path":"/var/log/haproxy/access.log","log_group_name":"${access_log_group}","log_stream_name":"{instance_id}/access"}
-  ]}}}
-}
-CWA
-  ctech_run setup-cloudwatch-agent.sh /tmp/cwagent.json
-fi
 
 cat > /etc/systemd/system/ctech-cloudflare-ips.service <<'UNIT'
 [Unit]
