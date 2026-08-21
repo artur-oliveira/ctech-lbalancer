@@ -131,10 +131,19 @@ resource "aws_autoscaling_group" "this" {
   max_size                  = 1
   health_check_type         = "EC2"
   health_check_grace_period = 600
+  capacity_rebalance        = true
 
-  launch_template {
-    id      = aws_launch_template.this.id
-    version = aws_launch_template.this.latest_version
+  mixed_instances_policy {
+    launch_template {
+      launch_template_specification {
+        launch_template_id = aws_launch_template.this.id
+        version            = aws_launch_template.this.latest_version
+      }
+    }
+    instances_distribution {
+      spot_allocation_strategy                 = "price-capacity-optimized"
+      on_demand_percentage_above_base_capacity = 0
+    }
   }
 
   tag {
