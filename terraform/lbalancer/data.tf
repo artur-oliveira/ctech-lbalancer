@@ -19,3 +19,22 @@ data "aws_route53_zone" "private" {
 data "aws_s3_bucket" "artifacts" {
   bucket = local.haproxy_artifact_bucket_name
 }
+
+# ctech-cdk's Alpine ARM64 AMI and its published Alpine script library —
+# only fetched when this environment actually opts into os_family=alpine, so
+# an environment that has never run the Alpine AMI/script pipeline doesn't
+# fail terraform plan/apply for an unrelated SSM parameter it will never use.
+data "aws_ssm_parameter" "alpine_arm64_ami" {
+  count = var.os_family == "alpine" ? 1 : 0
+  name  = "/ctech/${var.environment}/ami/alpine/arm64"
+}
+
+data "aws_ssm_parameter" "ec2_scripts_alpine_bucket" {
+  count = var.os_family == "alpine" ? 1 : 0
+  name  = "/ctech/${var.environment}/ec2-scripts-alpine/bucket"
+}
+
+data "aws_ssm_parameter" "ec2_scripts_alpine_version" {
+  count = var.os_family == "alpine" ? 1 : 0
+  name  = "/ctech/${var.environment}/ec2-scripts-alpine/version"
+}
