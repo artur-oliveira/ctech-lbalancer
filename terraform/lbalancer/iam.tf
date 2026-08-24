@@ -45,6 +45,7 @@ data "aws_iam_policy_document" "instance" {
       "arn:aws:ssm:${var.aws_region}:${var.aws_account}:parameter${local.ssm_paths.aop_ca}",
       "arn:aws:ssm:${var.aws_region}:${var.aws_account}:parameter${local.ssm_paths.cloudflare_dns_token}",
       "arn:aws:ssm:${var.aws_region}:${var.aws_account}:parameter${local.ssm_paths.haproxy_artifact_sha256}",
+      "arn:aws:ssm:${var.aws_region}:${var.aws_account}:parameter${local.ssm_paths.haproxy_artifact_sha256_alpine}",
       ],
       var.enable_internal_m2m ? [
         "arn:aws:ssm:${var.aws_region}:${var.aws_account}:parameter${local.private_hosted_zone_id_parameter}",
@@ -82,6 +83,7 @@ data "aws_iam_policy_document" "instance" {
     resources = [
       "arn:aws:ssm:${var.aws_region}:${var.aws_account}:parameter${local.ssm_paths.origin_ipv6}",
       "arn:aws:ssm:${var.aws_region}:${var.aws_account}:parameter${local.ssm_paths.haproxy_artifact_sha256}",
+      "arn:aws:ssm:${var.aws_region}:${var.aws_account}:parameter${local.ssm_paths.haproxy_artifact_sha256_alpine}",
     ]
   }
 
