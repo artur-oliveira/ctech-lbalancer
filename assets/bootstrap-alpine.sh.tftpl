@@ -65,7 +65,7 @@ artifact_installed=false
 artifact_sha256=$(ctech-ec2-agent ssm-get -name "$HAPROXY_ARTIFACT_SHA256_PATH" 2>/dev/null || true)
 if [[ "$artifact_sha256" =~ ^[0-9a-f]{64}$ ]] && \
    ctech-ec2-agent s3-cp -bucket "$HAPROXY_ARTIFACT_BUCKET" -key "$artifact_sha256" -dest "$HAPROXY_ARTIFACT" >/dev/null 2>&1 && \
-   echo "$artifact_sha256  $HAPROXY_ARTIFACT" | sha256sum --check --strict; then
+   echo "$artifact_sha256  $HAPROXY_ARTIFACT" | sha256sum -c; then  # busybox: no --check/--strict long opts
   artifact_members=$(tar -tzf "$HAPROXY_ARTIFACT")
   if [ "$artifact_members" = 'usr/local/sbin/haproxy' ]; then
     tar -xzf "$HAPROXY_ARTIFACT" -C /
@@ -84,7 +84,8 @@ if [ "$artifact_installed" != true ]; then
   curl --fail --silent --show-error --location \
     "https://www.haproxy.org/download/$${HAPROXY_BRANCH}/src/$${HAPROXY_TARBALL}" \
     --output "/tmp/$${HAPROXY_TARBALL}"
-  echo "${haproxy_source_sha256}  /tmp/$${HAPROXY_TARBALL}" | sha256sum --check --strict
+  # busybox sha256sum has no --check/--strict long opts, only -c[sw] — confirmed live.
+  echo "${haproxy_source_sha256}  /tmp/$${HAPROXY_TARBALL}" | sha256sum -c
   tar -xzf "/tmp/$${HAPROXY_TARBALL}" -C /tmp
   make -C "/tmp/haproxy-$${HAPROXY_VERSION}" -j1 \
     TARGET=linux-musl USE_OPENSSL=1 USE_PCRE2=1 USE_ZLIB=1 USE_PROMEX=1
