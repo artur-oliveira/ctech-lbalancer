@@ -1,0 +1,228 @@
+#!/bin/bash
+set -euo pipefail
+
+export AWS_USE_DUALSTACK_ENDPOINT=true
+
+CTECH_SCRIPTS_ALPINE_BUCKET='${ec2_scripts_alpine_bucket}'
+CTECH_SCRIPTS_ALPINE_VERSION='${ec2_scripts_alpine_version}'
+ctech_run(){ s="$1"; shift; ctech-ec2-agent s3-cp -bucket "$CTECH_SCRIPTS_ALPINE_BUCKET" -key "$CTECH_SCRIPTS_ALPINE_VERSION/$s" -dest "/tmp/$s" >/dev/null; bash "/tmp/$s" "$@"; }
+
+# setup-base.sh and setup-dualstack.sh are deliberately not used, for the same
+# reasons the AL2023 script skips their equivalents: this box has no `webapp`
+# user, no /opt/app, no nginx.
+
+# 128 MiB, not 256: this box's 1 GiB root volume needs the extra headroom for
+# the HAProxy source build below (verified live — 256 MiB left the build
+# short on disk). setup-swap.sh (assets/ec2/) is AL2023-only and not published
+# to the ec2-scripts-alpine bucket, so this is inlined rather than ctech_run.
+if [ ! -f /var/swapfile ]; then
+  dd if=/dev/zero of=/var/swapfile bs=1M count=128
+  chmod 600 /var/swapfile
+  mkswap /var/swapfile
+  swapon /var/swapfile
+  grep -q '^/var/swapfile ' /etc/fstab || echo "/var/swapfile swap swap defaults 0 0" >> /etc/fstab
+fi
+
+# jq/nftables/rsyslog/logrotate: same runtime role as the AL2023 list. openssl
+# is Alpine's CLI+libs package (AL2023's curl-minimal already ships the CLI;
+# Alpine's cloud image does not, so it must be requested explicitly here,
+# unlike AL2023's libs-only openssl-libs). pcre2/zlib are HAProxy's runtime
+# link targets, confirmed working live via `haproxy -vv` after this exact
+# build. libxcrypt has no Alpine/musl equivalent and nothing here calls it.
+apk add --no-cache jq nftables rsyslog logrotate openssl pcre2 zlib
+
+if [ '${enable_ssm_agent}' = 'true' ]; then
+  cat > /etc/amazon/ssm/amazon-ssm-agent.json <<'SSM'
+{ "Agent": { "UseDualStackEndpoint": true } }
+SSM
+  rc-update add amazon-ssm-agent default
+  rc-service amazon-ssm-agent restart
+else
+  # amazon-ssm-agent is baked into every Alpine AMI unconditionally by
+  # ctech-cdk's Packer pipeline, unlike AL2023 where it's a conditional dnf
+  # install — disabling it here stops the already-installed agent rather than
+  # skipping its installation.
+  rc-update del amazon-ssm-agent default 2>/dev/null || true
+  rc-service amazon-ssm-agent stop 2>/dev/null || true
+fi
+
+id -u haproxy >/dev/null 2>&1 || {
+  addgroup -S haproxy 2>/dev/null || true
+  adduser -S -D -H -G haproxy -s /sbin/nologin haproxy
+}
+install -d -o haproxy -g haproxy -m 0750 /var/lib/haproxy
+install -d -o haproxy -g haproxy -m 0750 /var/log/haproxy
+install -d -o root -g haproxy -m 0750 /etc/haproxy/tls
+
+HAPROXY_VERSION='${haproxy_version}'
+HAPROXY_BRANCH="$${HAPROXY_VERSION%.*}"
+HAPROXY_TARBALL="haproxy-$${HAPROXY_VERSION}.tar.gz"
+HAPROXY_ARTIFACT_BUCKET='${haproxy_artifact_bucket}'
+HAPROXY_ARTIFACT_SHA256_PATH='${haproxy_artifact_sha256_alpine_path}'
+HAPROXY_ARTIFACT=/tmp/haproxy-artifact.tar.gz
+artifact_installed=false
+
+artifact_sha256=$(ctech-ec2-agent ssm-get -name "$HAPROXY_ARTIFACT_SHA256_PATH" 2>/dev/null || true)
+if [[ "$artifact_sha256" =~ ^[0-9a-f]{64}$ ]] && \
+   ctech-ec2-agent s3-cp -bucket "$HAPROXY_ARTIFACT_BUCKET" -key "$artifact_sha256" -dest "$HAPROXY_ARTIFACT" >/dev/null 2>&1 && \
+   echo "$artifact_sha256  $HAPROXY_ARTIFACT" | sha256sum --check --strict; then
+  artifact_members=$(tar -tzf "$HAPROXY_ARTIFACT")
+  if [ "$artifact_members" = 'usr/local/sbin/haproxy' ]; then
+    tar -xzf "$HAPROXY_ARTIFACT" -C /
+    chmod 0755 /usr/local/sbin/haproxy
+    artifact_installed=true
+    echo "Installed HAProxy $${HAPROXY_VERSION} artifact $${artifact_sha256}"
+  else
+    echo "Ignoring HAProxy artifact with unexpected members: $${artifact_members}" >&2
+  fi
+fi
+
+if [ "$artifact_installed" != true ]; then
+  # linux-headers is not part of build-base and the build fails on
+  # linux/types.h without it — confirmed live.
+  apk add --no-cache build-base openssl-dev pcre2-dev zlib-dev linux-headers
+  curl --fail --silent --show-error --location \
+    "https://www.haproxy.org/download/$${HAPROXY_BRANCH}/src/$${HAPROXY_TARBALL}" \
+    --output "/tmp/$${HAPROXY_TARBALL}"
+  echo "${haproxy_source_sha256}  /tmp/$${HAPROXY_TARBALL}" | sha256sum --check --strict
+  tar -xzf "/tmp/$${HAPROXY_TARBALL}" -C /tmp
+  make -C "/tmp/haproxy-$${HAPROXY_VERSION}" -j1 \
+    TARGET=linux-musl USE_OPENSSL=1 USE_PCRE2=1 USE_ZLIB=1 USE_PROMEX=1
+  make -C "/tmp/haproxy-$${HAPROXY_VERSION}" install-bin PREFIX=/usr/local
+  strip /usr/local/sbin/haproxy
+
+  artifact_root=$(mktemp -d)
+  install -D -m 0755 /usr/local/sbin/haproxy \
+    "$artifact_root/usr/local/sbin/haproxy"
+  tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+    -C "$artifact_root" -cf - usr/local/sbin/haproxy | gzip -n -9 > "$HAPROXY_ARTIFACT"
+  artifact_sha256=$(sha256sum "$HAPROXY_ARTIFACT" | awk '{print $1}')
+
+  if ctech-ec2-agent s3-put -bucket "$HAPROXY_ARTIFACT_BUCKET" -key "$artifact_sha256" -file "$HAPROXY_ARTIFACT"; then
+    ctech-ec2-agent ssm-put -name "$HAPROXY_ARTIFACT_SHA256_PATH" -value "$artifact_sha256" || \
+      echo "HAProxy artifact uploaded but its SSM pointer could not be updated" >&2
+  else
+    echo "HAProxy artifact cache upload failed; continuing with the local binary" >&2
+  fi
+
+  rm -rf "/tmp/$${HAPROXY_TARBALL}" "/tmp/haproxy-$${HAPROXY_VERSION}" "$artifact_root"
+  apk del build-base openssl-dev pcre2-dev zlib-dev linux-headers
+fi
+
+# Do not pipe this through `head` under pipefail: HAProxy then receives
+# SIGPIPE, returns 141, and aborts the remainder of this script.
+/usr/local/sbin/haproxy -vv
+
+cat > /etc/init.d/haproxy <<'INITD'
+#!/sbin/openrc-run
+description="HAProxy LTS edge proxy"
+command="/usr/local/sbin/haproxy"
+command_args="-Ws -f /etc/haproxy/haproxy.cfg -p /run/haproxy.pid"
+env HAPROXY_MWORKER=1
+pidfile="/run/haproxy.pid"
+supervisor="supervise-daemon"
+respawn_delay=2
+respawn_max=0
+
+depend() {
+	need net
+}
+
+start_pre() {
+	checkpath -f /etc/haproxy/haproxy.cfg || { eerror "haproxy.cfg missing"; return 1; }
+}
+
+reload() {
+	ebegin "Reloading haproxy"
+	/usr/local/sbin/haproxy -c -f /etc/haproxy/haproxy.cfg && kill -USR2 "$(cat /run/haproxy.pid)"
+	eend $?
+}
+INITD
+chmod 0755 /etc/init.d/haproxy
+
+mkdir -p /etc/rsyslog.d
+cat > /etc/rsyslog.d/49-haproxy.conf <<'RSYSLOG'
+module(load="imudp")
+input(type="imudp" address="127.0.0.1" port="514")
+template(name="HAProxyMessage" type="string" string="%msg%\n")
+if ($programname == 'haproxy') then {
+  action(type="omfile" file="/var/log/haproxy/access.log" template="HAProxyMessage")
+  stop
+}
+RSYSLOG
+
+cat > /etc/logrotate.d/ctech-lbalancer <<'LOGROTATE'
+/var/log/haproxy/access.log {
+  daily
+  rotate 3
+  size 20M
+  missingok
+  notifempty
+  compress
+  copytruncate
+}
+LOGROTATE
+
+cat > /etc/init.d/ctech-cloudflare-ips <<'INITD'
+#!/sbin/openrc-run
+description="Refresh trusted CDN ranges and Cloudflare-only IPv6 firewall"
+command="/opt/ctech-lbalancer/refresh-cloudflare-ips.sh"
+command_background="no"
+depend() {
+	need net
+}
+INITD
+chmod 0755 /etc/init.d/ctech-cloudflare-ips
+
+mkdir -p /etc/periodic/daily
+cat > /etc/periodic/daily/ctech-cloudflare-ips <<'PERIODIC'
+#!/bin/bash
+# OpenRC has no RandomizedDelaySec — jitter the run itself.
+sleep $((RANDOM % 1800))
+/opt/ctech-lbalancer/refresh-cloudflare-ips.sh
+PERIODIC
+chmod 0755 /etc/periodic/daily/ctech-cloudflare-ips
+
+cat > /etc/init.d/ctech-lbalancer-reconcile <<'INITD'
+#!/sbin/openrc-run
+description="Reconcile HAProxy routes and ASG targets every 30 seconds"
+command="/opt/ctech-lbalancer/reconcile-loop.sh"
+command_background="yes"
+pidfile="/run/ctech-lbalancer-reconcile.pid"
+supervisor="supervise-daemon"
+respawn_delay=5
+respawn_max=0
+output_log="/var/log/ctech-lbalancer-reconcile.log"
+error_log="/var/log/ctech-lbalancer-reconcile.log"
+
+depend() {
+	need net
+	after ctech-cloudflare-ips rsyslog
+}
+INITD
+chmod 0755 /etc/init.d/ctech-lbalancer-reconcile
+
+# busybox crond's finest granularity is one minute — the AL2023 systemd timer
+# runs every 30s with AccuracySec=5s, which cron cannot express. This
+# supervised loop is the one behavioral-shape change in this migration:
+# a periodic oneshot timer becomes a persistent process, restarted by
+# supervise-daemon if it ever exits.
+cat > /opt/ctech-lbalancer/reconcile-loop.sh <<'LOOP'
+#!/bin/bash
+export AWS_USE_DUALSTACK_ENDPOINT=true
+while true; do
+  /opt/ctech-lbalancer/reconcile.sh || true
+  sleep 30
+done
+LOOP
+chmod 0750 /opt/ctech-lbalancer/reconcile-loop.sh
+
+rc-update add nftables default
+rc-update add rsyslog default
+rc-service rsyslog restart
+/opt/ctech-lbalancer/refresh-cloudflare-ips.sh
+rc-update add ctech-cloudflare-ips default
+rc-service ctech-cloudflare-ips start
+rc-update add ctech-lbalancer-reconcile default
+rc-service ctech-lbalancer-reconcile start
+/opt/ctech-lbalancer/reconcile.sh || true
