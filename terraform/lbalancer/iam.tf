@@ -80,16 +80,20 @@ data "aws_iam_policy_document" "instance" {
   statement {
     sid     = "PublishOriginState"
     actions = ["ssm:PutParameter"]
-    resources = [
-      "arn:aws:ssm:${var.aws_region}:${var.aws_account}:parameter${local.ssm_paths.origin_ipv6}",
-      "arn:aws:ssm:${var.aws_region}:${var.aws_account}:parameter${local.ssm_paths.haproxy_artifact_sha256}",
-      "arn:aws:ssm:${var.aws_region}:${var.aws_account}:parameter${local.ssm_paths.haproxy_artifact_sha256_alpine}",
-    ]
+    resources = concat(
+      ["arn:aws:ssm:${var.aws_region}:${var.aws_account}:parameter${local.ssm_paths.origin_ipv6}"],
+      var.os_family == "al2023" ? [
+        "arn:aws:ssm:${var.aws_region}:${var.aws_account}:parameter${local.ssm_paths.haproxy_artifact_sha256}",
+      ] : [],
+    )
   }
 
   statement {
-    sid       = "HaproxyArtifactCache"
-    actions   = ["s3:GetObject", "s3:PutObject", "s3:AbortMultipartUpload"]
+    sid = "HaproxyArtifactCache"
+    actions = concat(
+      ["s3:GetObject"],
+      var.os_family == "al2023" ? ["s3:PutObject", "s3:AbortMultipartUpload"] : [],
+    )
     resources = ["${data.aws_s3_bucket.artifacts.arn}/*"]
   }
 

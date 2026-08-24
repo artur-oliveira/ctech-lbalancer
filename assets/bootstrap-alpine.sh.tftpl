@@ -11,10 +11,10 @@ ctech_run(){ s="$1"; shift; ctech-ec2-agent s3-cp -bucket "$CTECH_SCRIPTS_ALPINE
 # reasons the AL2023 script skips their equivalents: this box has no `webapp`
 # user, no /opt/app, no nginx.
 
-# 128 MiB, not 256: this box's 1 GiB root volume needs the extra headroom for
-# the HAProxy source build below (verified live — 256 MiB left the build
-# short on disk). setup-swap.sh (assets/ec2/) is AL2023-only and not published
-# to the ec2-scripts-alpine bucket, so this is inlined rather than ctech_run.
+# A small swap file gives the 512 MiB nano runtime some failure headroom without
+# consuming much of its 1 GiB root volume. setup-swap.sh (assets/ec2/) is
+# AL2023-only and is not published to the Alpine scripts bucket, so this stays
+# inlined rather than using ctech_run.
 if [ ! -f /var/swapfile ]; then
   dd if=/dev/zero of=/var/swapfile bs=1M count=128
   chmod 600 /var/swapfile
@@ -55,60 +55,33 @@ install -d -o haproxy -g haproxy -m 0750 /var/log/haproxy
 install -d -o root -g haproxy -m 0750 /etc/haproxy/tls
 
 HAPROXY_VERSION='${haproxy_version}'
-HAPROXY_BRANCH="$${HAPROXY_VERSION%.*}"
-HAPROXY_TARBALL="haproxy-$${HAPROXY_VERSION}.tar.gz"
 HAPROXY_ARTIFACT_BUCKET='${haproxy_artifact_bucket}'
 HAPROXY_ARTIFACT_SHA256_PATH='${haproxy_artifact_sha256_alpine_path}'
 HAPROXY_ARTIFACT=/tmp/haproxy-artifact.tar.gz
-artifact_installed=false
 
-artifact_sha256=$(ctech-ec2-agent ssm-get -name "$HAPROXY_ARTIFACT_SHA256_PATH" 2>/dev/null || true)
-if [[ "$artifact_sha256" =~ ^[0-9a-f]{64}$ ]] && \
-   ctech-ec2-agent s3-cp -bucket "$HAPROXY_ARTIFACT_BUCKET" -key "$artifact_sha256" -dest "$HAPROXY_ARTIFACT" >/dev/null 2>&1 && \
-   echo "$artifact_sha256  $HAPROXY_ARTIFACT" | sha256sum -c; then  # busybox: no --check/--strict long opts
-  artifact_members=$(tar -tzf "$HAPROXY_ARTIFACT")
-  if [ "$artifact_members" = 'usr/local/sbin/haproxy' ]; then
-    tar -xzf "$HAPROXY_ARTIFACT" -C /
-    chmod 0755 /usr/local/sbin/haproxy
-    artifact_installed=true
-    echo "Installed HAProxy $${HAPROXY_VERSION} artifact $${artifact_sha256}"
-  else
-    echo "Ignoring HAProxy artifact with unexpected members: $${artifact_members}" >&2
-  fi
+artifact_sha256=$(ctech-ec2-agent ssm-get -name "$HAPROXY_ARTIFACT_SHA256_PATH")
+if [[ ! "$artifact_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "Invalid or missing HAProxy $${HAPROXY_VERSION} ARM64 artifact pointer at $${HAPROXY_ARTIFACT_SHA256_PATH}" >&2
+  exit 1
 fi
 
-if [ "$artifact_installed" != true ]; then
-  # linux-headers is not part of build-base and the build fails on
-  # linux/types.h without it — confirmed live.
-  apk add --no-cache build-base openssl-dev pcre2-dev zlib-dev linux-headers
-  curl --fail --silent --show-error --location \
-    "https://www.haproxy.org/download/$${HAPROXY_BRANCH}/src/$${HAPROXY_TARBALL}" \
-    --output "/tmp/$${HAPROXY_TARBALL}"
-  # busybox sha256sum has no --check/--strict long opts, only -c[sw] — confirmed live.
-  echo "${haproxy_source_sha256}  /tmp/$${HAPROXY_TARBALL}" | sha256sum -c
-  tar -xzf "/tmp/$${HAPROXY_TARBALL}" -C /tmp
-  make -C "/tmp/haproxy-$${HAPROXY_VERSION}" -j1 \
-    TARGET=linux-musl USE_OPENSSL=1 USE_PCRE2=1 USE_ZLIB=1 USE_PROMEX=1
-  make -C "/tmp/haproxy-$${HAPROXY_VERSION}" install-bin PREFIX=/usr/local
-  strip /usr/local/sbin/haproxy
+ctech-ec2-agent s3-cp \
+  -bucket "$HAPROXY_ARTIFACT_BUCKET" \
+  -key "$artifact_sha256" \
+  -dest "$HAPROXY_ARTIFACT" >/dev/null
+# BusyBox sha256sum has only the short -c option.
+echo "$artifact_sha256  $HAPROXY_ARTIFACT" | sha256sum -c
 
-  artifact_root=$(mktemp -d)
-  install -D -m 0755 /usr/local/sbin/haproxy \
-    "$artifact_root/usr/local/sbin/haproxy"
-  tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
-    -C "$artifact_root" -cf - usr/local/sbin/haproxy | gzip -n -9 > "$HAPROXY_ARTIFACT"
-  artifact_sha256=$(sha256sum "$HAPROXY_ARTIFACT" | awk '{print $1}')
-
-  if ctech-ec2-agent s3-put -bucket "$HAPROXY_ARTIFACT_BUCKET" -key "$artifact_sha256" -file "$HAPROXY_ARTIFACT"; then
-    ctech-ec2-agent ssm-put -name "$HAPROXY_ARTIFACT_SHA256_PATH" -value "$artifact_sha256" || \
-      echo "HAProxy artifact uploaded but its SSM pointer could not be updated" >&2
-  else
-    echo "HAProxy artifact cache upload failed; continuing with the local binary" >&2
-  fi
-
-  rm -rf "/tmp/$${HAPROXY_TARBALL}" "/tmp/haproxy-$${HAPROXY_VERSION}" "$artifact_root"
-  apk del build-base openssl-dev pcre2-dev zlib-dev linux-headers
+artifact_members=$(tar -tzf "$HAPROXY_ARTIFACT")
+if [ "$artifact_members" != 'usr/local/sbin/haproxy' ]; then
+  echo "Refusing HAProxy artifact with unexpected members: $${artifact_members}" >&2
+  exit 1
 fi
+
+tar -xzf "$HAPROXY_ARTIFACT" -C /
+chmod 0755 /usr/local/sbin/haproxy
+rm -f "$HAPROXY_ARTIFACT"
+echo "Installed HAProxy $${HAPROXY_VERSION} artifact $${artifact_sha256}"
 
 # Do not pipe this through `head` under pipefail: HAProxy then receives
 # SIGPIPE, returns 141, and aborts the remainder of this script.

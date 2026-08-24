@@ -1,12 +1,13 @@
 # Port of lib/constants.ts and lib/types.ts.
 
 locals {
+  haproxy_build                    = jsondecode(file("${path.module}/../../build/haproxy.json"))
   base_domain                      = "aoctech.app"
   private_zone_name                = "internal.${local.base_domain}"
   private_hosted_zone_id_parameter = "/ctech/global/dns/private-hosted-zone-id"
-  haproxy_version                  = "3.4.3"
+  haproxy_version                  = local.haproxy_build.version
   haproxy_artifact_bucket_name     = "ctech-lbalancer-artifacts"
-  haproxy_source_sha256            = "7fa666d36d198275999e2a68dda44d3d37960f2f7aed3a595fb811f4fd0515b5"
+  haproxy_source_sha256            = local.haproxy_build.source_sha256
 
   ssm_paths = {
     edge_security_group_id         = "/ctech/${var.environment}/network/alb-sg-id"

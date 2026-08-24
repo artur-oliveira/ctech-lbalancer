@@ -1,0 +1,108 @@
+name: HAProxy ARM64 Artifact
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'build/haproxy.json'
+      - 'build/haproxy/**'
+      - '.github/workflows/haproxy-artifact.yml'
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ARTIFACT_BUCKET: ctech-lbalancer-artifacts
+  ROLE_ARN: arn:aws:iam::868899309401:role/ctech-lbalancer-gha-haproxy
+
+jobs:
+  build:
+    name: Build & Publish
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Read pinned build inputs
+        id: build
+        run: |
+          version=$(jq -er '.version | select(test("^[0-9]+\\.[0-9]+\\.[0-9]+$"))' build/haproxy.json)
+          source_sha256=$(jq -er '.source_sha256 | select(test("^[0-9a-f]{64}$"))' build/haproxy.json)
+          alpine_version=$(jq -er '.alpine_version | select(test("^[0-9]+\\.[0-9]+$"))' build/haproxy.json)
+          {
+            echo "HAPROXY_VERSION=$version"
+            echo "HAPROXY_SOURCE_SHA256=$source_sha256"
+            echo "ALPINE_VERSION=$alpine_version"
+            echo "POINTER=/ctech/global/lbalancer/haproxy/$version/alpine-arm64/artifact-sha256"
+          } >> "$GITHUB_ENV"
+          {
+            echo "version=$version"
+            echo "source_sha256=$source_sha256"
+            echo "alpine_version=$alpine_version"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build native ARM64 binary
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: build/haproxy/Dockerfile
+          platforms: linux/arm64
+          target: artifact
+          outputs: type=local,dest=dist/haproxy-root
+          build-args: |
+            ALPINE_VERSION=${{ steps.build.outputs.alpine_version }}
+            HAPROXY_VERSION=${{ steps.build.outputs.version }}
+            HAPROXY_SOURCE_SHA256=${{ steps.build.outputs.source_sha256 }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Package deterministic artifact
+        run: |
+          test -x dist/haproxy-root/usr/local/sbin/haproxy
+          tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
+            -C dist/haproxy-root -cf - usr/local/sbin/haproxy | \
+            gzip -n -9 > dist/haproxy-artifact.tar.gz
+          test "$(tar -tzf dist/haproxy-artifact.tar.gz)" = 'usr/local/sbin/haproxy'
+          artifact_sha256=$(sha256sum dist/haproxy-artifact.tar.gz | awk '{print $1}')
+          echo "ARTIFACT_SHA256=$artifact_sha256" >> "$GITHUB_ENV"
+          echo "HAProxy ${HAPROXY_VERSION}: ${artifact_sha256}" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ env.ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Publish artifact and pointer
+        run: |
+          aws s3api put-object \
+            --bucket "$ARTIFACT_BUCKET" \
+            --key "$ARTIFACT_SHA256" \
+            --body dist/haproxy-artifact.tar.gz \
+            --checksum-algorithm SHA256
+
+          verify=$(mktemp)
+          aws s3api get-object \
+            --bucket "$ARTIFACT_BUCKET" \
+            --key "$ARTIFACT_SHA256" \
+            "$verify" >/dev/null
+          echo "$ARTIFACT_SHA256  $verify" | sha256sum --check --strict
+          rm -f "$verify"
+
+          aws ssm put-parameter \
+            --name "$POINTER" \
+            --type String \
+            --value "$ARTIFACT_SHA256" \
+            --overwrite
+          published_sha256=$(aws ssm get-parameter \
+            --name "$POINTER" \
+            --query Parameter.Value \
+            --output text)
+          test "$published_sha256" = "$ARTIFACT_SHA256"

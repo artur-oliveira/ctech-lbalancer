@@ -14,10 +14,10 @@ service -> private DNS -> IPv4:443 HAProxy ------------+
 
 HAProxy is built from the official source tarball as version **3.4.3 LTS** and
 verified against its pinned SHA-256. The branch is supported through 2031-Q2.
-The instance starts as `t4g.nano`; test `INSTANCE_TYPE=t4g.nano` only after
-observing memory and CPU-credit headroom. It has no public IPv4 address and uses
-T4g Standard credits. Replacements normally download the verified cached HAProxy
-artifact instead of compiling it.
+GitHub Actions compiles the Alpine ARM64 binary in a pinned Alpine Docker build;
+the instance only downloads the verified artifact. The instance starts as
+`t4g.nano`; test `INSTANCE_TYPE=t4g.nano` only after observing memory and
+CPU-credit headroom. It has no public IPv4 address and uses T4g Standard credits.
 
 ## Why HAProxy
 
@@ -35,10 +35,11 @@ RAM on a nano; open-source nginx needs more care for changing upstream IPs.
 - The four bootstrap registrations use the current unsuffixed service ASG names
   (`{env}-ctech-{account,dfe,wallet,poker}`), matching the service CDK outputs and
   the deployed production route parameters.
-- HAProxy is compiled once per pinned version on the first cache miss. The
-  verified ARM64 bundle is shared across environments in a retained S3 bucket;
-  its complete object key is the bundle's SHA-256, recorded in a versioned SSM
-  parameter. Replacements verify the digest and skip compilation.
+- GitHub Actions compiles each pinned Alpine/ARM64 HAProxy version on a native
+  ARM64 runner. The verified bundle is shared across environments in a retained
+  S3 bucket; its complete object key is the bundle's SHA-256, recorded in a
+  versioned SSM parameter. Instances have read-only artifact access and fail
+  bootstrap rather than compiling on the nano if the artifact is unavailable.
 - Every 30 seconds the instance discovers all healthy `InService` members of the
   registered Auto Scaling Groups, validates a generated HAProxy config, and
   gracefully reloads only if something changed.
@@ -97,8 +98,7 @@ Private M2M prerequisites, deployment, client trust, validation, and rollback
 are in [docs/internal-m2m.md](docs/internal-m2m.md).
 
 One-time setup, per AWS account: `./scripts/bootstrap-terraform-state.sh`
-creates the shared Terraform state bucket + lock table used by both roots
-below.
+creates the shared Terraform state bucket used by all roots below.
 
 ```bash
 # 1. Account/region-wide artifact bucket — deploy once, independent of environment.
@@ -106,7 +106,16 @@ cd terraform/artifact
 terraform init
 terraform apply
 
-# 2. Per-environment load balancer stack.
+# 2. GitHub OIDC publisher — deploy once from a trusted workstation.
+# The shared OIDC provider must already exist at /ctech/global/oidc/provider-arn.
+cd ../github
+AWS_PROFILE=ctech terraform init
+AWS_PROFILE=ctech terraform apply
+
+# 3. Merge or manually run "HAProxy ARM64 Artifact" on main, and wait for it
+# to publish the Alpine artifact before creating/replacing an Alpine instance.
+
+# 4. Per-environment load balancer stack.
 cd ../lbalancer
 terraform init
 terraform workspace select prod || terraform workspace new prod
@@ -116,10 +125,11 @@ terraform apply -var-file=environments/prod.tfvars
 
 `environments/{dev,stage,prod}.tfvars` holds `vpc_id` (read from
 `/ctech/{env}/network/vpc-id`), `instance_type`, and `enable_internal_m2m` per
-environment. `terraform/artifact/` and `terraform/lbalancer/` are independent
-root modules with separate state — the artifact bucket has no expiration rule
-and no public access; the load-balancer role can publish only to it and can
-update only the version-specific artifact hash parameter.
+environment. All three Terraform directories are independent roots with
+separate state. The artifact bucket has no expiration rule and no public access.
+The branch-restricted GitHub OIDC role can publish Alpine artifacts and their
+versioned pointers; Alpine instances can only read them. AL2023 retains its
+legacy on-instance artifact-cache publisher until that boot path is retired.
 
 The ALB migration is complete: nothing in this account instantiates an ALB and
 the production account has no ELBv2 load balancer. `origin.aoctech.app`

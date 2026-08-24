@@ -145,35 +145,49 @@ seconds, or put the ASG instance in standby.
 
 ## 5. Upgrade HAProxy
 
-Patch upgrades are intentionally code changes. Update `HAPROXY_VERSION` and
-`HAPROXY_SOURCE_SHA256` in `lib/constants.ts`, run build/tests/synth, deploy to dev, then
-stage and prod. Never point the bootstrap at an unpinned `latest` artifact.
+Patch upgrades are intentionally code changes. Update `version` and
+`source_sha256` in `build/haproxy.json` together. If the Alpine release used by
+the AMI changes, update `alpine_version` there too. Never point the bootstrap at
+an unpinned `latest` artifact.
 
-Each version has a global cache pointer at
-`/ctech/global/lbalancer/haproxy/{version}/al2023-arm64/artifact-sha256`. Its
-value is also the complete object key in the retained
-`ctech-lbalancer-artifacts` bucket. On a cache miss, the first
-instance verifies the official source archive, compiles and strips HAProxy,
-creates a deterministic single-file bundle, uploads it with an S3 SHA-256
-checksum, and records the bundle hash. All later environments and replacements
-download and independently verify that hash before extraction.
+The `HAProxy ARM64 Artifact` workflow runs on a native GitHub-hosted ARM64
+runner. Its Docker build verifies the source archive, compiles and strips
+HAProxy against Alpine/musl, confirms Prometheus exporter support, and exports
+only `/usr/local/sbin/haproxy`. The workflow creates a deterministic bundle,
+uploads it under its SHA-256 in `ctech-lbalancer-artifacts`, downloads it again
+for verification, and only then updates
+`/ctech/global/lbalancer/haproxy/{version}/alpine-arm64/artifact-sha256`.
+
+The workflow assumes `ctech-lbalancer-gha-haproxy` through GitHub OIDC. Apply
+`terraform/github` once from a trusted workstation before its first run. Its
+trust is restricted to this repository's `main` branch and its policy can write
+only this bucket and Alpine HAProxy pointer paths.
+
+Merge the manifest change and wait for the artifact workflow to succeed before
+applying a launch-template change or replacing an Alpine instance. Alpine boot
+is intentionally download-only: a missing pointer, missing object, digest
+mismatch, or unexpected archive member stops bootstrap instead of compiling on
+the T4g.nano.
 
 Inspect the active artifact without changing it:
 
 ```bash
 VERSION=3.4.3
 HASH="$(aws ssm get-parameter \
-  --name "/ctech/global/lbalancer/haproxy/${VERSION}/al2023-arm64/artifact-sha256" \
+  --name "/ctech/global/lbalancer/haproxy/${VERSION}/alpine-arm64/artifact-sha256" \
   --query Parameter.Value --output text)"
-BUCKET="$(aws cloudformation describe-stacks \
-  --stack-name Ctech-LoadBalancerArtifacts \
-  --query 'Stacks[0].Outputs[?OutputKey==`BucketName`].OutputValue' --output text)"
+BUCKET=ctech-lbalancer-artifacts
 aws s3api head-object --bucket "$BUCKET" --key "$HASH" --checksum-mode ENABLED
 ```
 
-If a first boot compiled HAProxy but could not publish the cache, connect to that
-instance with Session Manager and publish the already-created bundle. Run this
-as root; the SSM pointer is written only after the S3 upload succeeds:
+To rebuild the same pinned version, manually dispatch `HAProxy ARM64 Artifact`
+on `main`. Content-addressing makes an identical build reuse the same object;
+the pointer is written only after the uploaded bytes have been downloaded and
+verified. The EC2 role cannot publish or repair Alpine artifacts.
+
+AL2023 still uses the legacy on-instance cache builder. If an AL2023 first boot
+compiled HAProxy but could not publish its cache, connect with Session Manager
+and publish the already-created bundle as root:
 
 ```bash
 sudo -i
@@ -213,10 +227,10 @@ tar --sort=name --mtime='@0' --owner=0 --group=0 --numeric-owner \
 rm -rf "$ARTIFACT_ROOT"
 ```
 
-Do not use an S3 ETag as the artifact identity. To force a carefully reviewed
-rebuild of the same pinned version, delete only its SSM pointer; never delete a
-hash-addressed object still referenced by that parameter. A missing object or
-checksum mismatch falls back to the pinned source build.
+Do not use an S3 ETag as the artifact identity and never delete a hash-addressed
+object while a pointer references it. For Alpine, do not delete the SSM pointer
+to force a rebuild: rerun the workflow, verify it, and leave the last valid
+pointer available throughout.
 
 Changing launch-template user data starts an ASG instance refresh only when you
 explicitly request one. After deployment, replace the one load-balancer member:
@@ -259,11 +273,11 @@ Migration sequence:
 - **Certificate expiry:** Origin CA can be long lived, but inventory its expiry;
   set Cloudflare AOP expiry alerts for the client certificate and use the
   [renewal runbook](aop-certificate-renewal.md) at the 30-day warning.
-- **CPU credits:** nano has a 5% baseline. Watch both `CPUCreditBalance` and
-  `CPUSurplusCreditsCharged`; move back to micro if the latter becomes nonzero or
-  latency rises. Standard mode is not used because T4g has no launch credits and
-  would make first-boot compilation/recovery unacceptably slow.
-- **Memory:** 512 MiB is enough for this small route set and includes 512 MiB
+- **CPU credits:** nano has a 5% baseline. It runs in T4g Standard mode, so it
+  throttles after exhausting `CPUCreditBalance` instead of charging for surplus
+  credits. Moving compilation to CI makes replacement time independent of that
+  balance; move back to micro if normal request latency rises under throttling.
+- **Memory:** 512 MiB is enough for this small route set and includes 128 MiB
   swap, but avoid adding a large control plane or per-request scripting.
 - **Logs:** local logs rotate at 20 MiB/three days. JSON entries include the
   HAProxy queue, backend-connect, backend-response, and total timings in
