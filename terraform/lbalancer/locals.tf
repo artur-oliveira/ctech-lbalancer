@@ -9,16 +9,17 @@ locals {
   haproxy_source_sha256            = "7fa666d36d198275999e2a68dda44d3d37960f2f7aed3a595fb811f4fd0515b5"
 
   ssm_paths = {
-    edge_security_group_id   = "/ctech/${var.environment}/network/alb-sg-id"
-    routes                   = "/ctech/${var.environment}/lbalancer/routes"
-    origin_ipv6              = "/ctech/${var.environment}/lbalancer/origin-ipv6"
-    tls_certificate          = "/ctech/${var.environment}/lbalancer/tls/origin-certificate"
-    tls_private_key          = "/ctech/${var.environment}/lbalancer/tls/origin-private-key"
-    internal_tls_certificate = "/ctech/${var.environment}/lbalancer/tls/internal-certificate"
-    internal_tls_private_key = "/ctech/${var.environment}/lbalancer/tls/internal-private-key"
-    aop_ca                   = "/ctech/${var.environment}/lbalancer/tls/aop-ca"
-    cloudflare_dns_token     = "/ctech/global/cloudflare/dns-api-token"
-    haproxy_artifact_sha256  = "/ctech/global/lbalancer/haproxy/${local.haproxy_version}/al2023-arm64/artifact-sha256"
+    edge_security_group_id         = "/ctech/${var.environment}/network/alb-sg-id"
+    routes                         = "/ctech/${var.environment}/lbalancer/routes"
+    origin_ipv6                    = "/ctech/${var.environment}/lbalancer/origin-ipv6"
+    tls_certificate                = "/ctech/${var.environment}/lbalancer/tls/origin-certificate"
+    tls_private_key                = "/ctech/${var.environment}/lbalancer/tls/origin-private-key"
+    internal_tls_certificate       = "/ctech/${var.environment}/lbalancer/tls/internal-certificate"
+    internal_tls_private_key       = "/ctech/${var.environment}/lbalancer/tls/internal-private-key"
+    aop_ca                         = "/ctech/${var.environment}/lbalancer/tls/aop-ca"
+    cloudflare_dns_token           = "/ctech/global/cloudflare/dns-api-token"
+    haproxy_artifact_sha256        = "/ctech/global/lbalancer/haproxy/${local.haproxy_version}/al2023-arm64/artifact-sha256"
+    haproxy_artifact_sha256_alpine = "/ctech/global/lbalancer/haproxy/${local.haproxy_version}/alpine-arm64/artifact-sha256"
   }
 
   # domainForEnv(env, prefix)
