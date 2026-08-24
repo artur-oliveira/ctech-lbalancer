@@ -9,7 +9,8 @@ flock -n 9 || exit 0
 
 STATE_DIR=/var/lib/haproxy/ctech-state
 CONFIG=/etc/haproxy/haproxy.cfg
-mkdir -p "$STATE_DIR" /etc/haproxy/tls
+mkdir -p "$STATE_DIR"
+install -d -o root -g haproxy -m 0750 /etc/haproxy /etc/haproxy/tls
 
 parameter() {
   aws ssm get-parameter --name "$1" --with-decryption \
@@ -244,6 +245,11 @@ for ((index=0; index<route_count; index++)); do
     ;;
   esac
   printf '  http-request return status 204 hdr Access-Control-Allow-Origin %%[var(txn.cors_origin)] hdr Access-Control-Allow-Credentials true hdr Access-Control-Allow-Methods "GET,POST,PUT,PATCH,DELETE,OPTIONS" hdr Access-Control-Allow-Headers "Authorization,Content-Type" hdr Access-Control-Max-Age 86400 hdr Vary Origin if route_%d METH_OPTIONS { var(txn.cors_origin) -m found } { nbsrv(route_%d) eq 0 }\n' "$index" "$index" >> "$new_config"
+done
+# HAProxy evaluates http-request rules before use_backend regardless of their
+# textual order and warns when the file suggests otherwise. Emit every request
+# rule first, then the routing rules, so the configuration mirrors execution.
+for ((index=0; index<route_count; index++)); do
   printf '  use_backend route_%d if route_%d\n' "$index" "$index" >> "$new_config"
 done
 printf '  default_backend unknown_host\n' >> "$new_config"
@@ -317,13 +323,22 @@ HAPROXY
 done
 
 /usr/local/sbin/haproxy -c -f "$new_config"
+config_changed=false
 if [ ! -f "$CONFIG" ] || ! cmp -s "$new_config" "$CONFIG"; then
   install -o root -g haproxy -m 0640 "$new_config" "$CONFIG"
-  if systemctl is-active --quiet haproxy; then
+  config_changed=true
+else
+  # Content equality does not imply correct security metadata. Repair drift
+  # caused by manual recovery or an older bootstrap on every reconciliation.
+  chown root:haproxy "$CONFIG"
+  chmod 0640 "$CONFIG"
+fi
+if systemctl is-active --quiet haproxy; then
+  if [ "$config_changed" = true ]; then
     systemctl reload haproxy
-  else
-    systemctl enable --now haproxy
   fi
+else
+  systemctl enable --now haproxy
 fi
 
 # App-level auto-healing: HAProxy immediately stops routing after its own fall

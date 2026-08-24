@@ -8,7 +8,8 @@ flock -n 9 || exit 0
 
 STATE_DIR=/var/lib/haproxy/ctech-state
 CONFIG=/etc/haproxy/haproxy.cfg
-mkdir -p "$STATE_DIR" /etc/haproxy/tls
+mkdir -p "$STATE_DIR"
+install -d -o root -g haproxy -m 0750 /etc/haproxy /etc/haproxy/tls
 
 parameter() {
   ctech-ec2-agent ssm-get -name "$1" -decrypt 2>/dev/null
@@ -241,6 +242,11 @@ for ((index=0; index<route_count; index++)); do
     ;;
   esac
   printf '  http-request return status 204 hdr Access-Control-Allow-Origin %%[var(txn.cors_origin)] hdr Access-Control-Allow-Credentials true hdr Access-Control-Allow-Methods "GET,POST,PUT,PATCH,DELETE,OPTIONS" hdr Access-Control-Allow-Headers "Authorization,Content-Type" hdr Access-Control-Max-Age 86400 hdr Vary Origin if route_%d METH_OPTIONS { var(txn.cors_origin) -m found } { nbsrv(route_%d) eq 0 }\n' "$index" "$index" >> "$new_config"
+done
+# HAProxy evaluates http-request rules before use_backend regardless of their
+# textual order and warns when the file suggests otherwise. Emit every request
+# rule first, then the routing rules, so the configuration mirrors execution.
+for ((index=0; index<route_count; index++)); do
   printf '  use_backend route_%d if route_%d\n' "$index" "$index" >> "$new_config"
 done
 printf '  default_backend unknown_host\n' >> "$new_config"
@@ -314,14 +320,27 @@ HAPROXY
 done
 
 /usr/local/sbin/haproxy -c -f "$new_config"
+config_changed=false
 if [ ! -f "$CONFIG" ] || ! cmp -s "$new_config" "$CONFIG"; then
   install -o root -g haproxy -m 0640 "$new_config" "$CONFIG"
-  if rc-service haproxy status >/dev/null 2>&1; then
+  config_changed=true
+else
+  # Content equality does not imply correct security metadata. Repair drift
+  # caused by manual recovery or an older bootstrap on every reconciliation.
+  chown root:haproxy "$CONFIG"
+  chmod 0640 "$CONFIG"
+fi
+if rc-service haproxy status >/dev/null 2>&1; then
+  if [ "$config_changed" = true ]; then
     rc-service haproxy reload
-  else
-    rc-update add haproxy default
-    rc-service haproxy start
   fi
+else
+  rc-update add haproxy default
+  # 9>&- so the lock fd (opened above) isn't inherited into supervise-daemon,
+  # which forks off and outlives this script — confirmed live: an inherited
+  # copy of the fd keeps the reconcile lock held forever after the first
+  # cold-start, wedging every subsequent reconcile.sh run at "flock -n 9".
+  rc-service haproxy start 9>&-
 fi
 
 # App-level auto-healing: HAProxy immediately stops routing after its own fall
@@ -339,7 +358,11 @@ for ((index=0; index<route_count; index++)); do
     instance_id=$(jq -r ".[$${index}].targets[$${target_index}].id" <<<"$resolved")
     private_ip=$(jq -r ".[$${index}].targets[$${target_index}].ip" <<<"$resolved")
     launch_time=$(jq -r ".[$${index}].targets[$${target_index}].launchTime" <<<"$resolved")
-    launched=$(date -d "$launch_time" +%s)
+    # busybox date -d doesn't parse RFC3339's trailing Z the way GNU date
+    # does ("invalid date") — confirmed live, and fatal under set -e, killing
+    # every reconcile cycle before it ever reaches the Cloudflare DNS update
+    # further down. -D gives busybox the exact input format to parse instead.
+    launched=$(date -u -D '%Y-%m-%dT%H:%M:%SZ' -d "$launch_time" +%s)
     [ $((now - launched)) -ge 180 ] || continue
     code=$(curl --silent --output /dev/null --connect-timeout 3 --max-time 5 \
       --header "Host: $${hostname}" --write-out '%%{http_code}' \

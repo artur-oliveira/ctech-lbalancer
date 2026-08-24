@@ -44,6 +44,7 @@ if ! id haproxy >/dev/null 2>&1; then
 fi
 install -d -o haproxy -g haproxy -m 0750 /var/lib/haproxy
 install -d -o haproxy -g haproxy -m 0750 /var/log/haproxy
+install -d -o root -g haproxy -m 0750 /etc/haproxy
 install -d -o root -g haproxy -m 0750 /etc/haproxy/tls
 
 HAPROXY_VERSION='${haproxy_version}'

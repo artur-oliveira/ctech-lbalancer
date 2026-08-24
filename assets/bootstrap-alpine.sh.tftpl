@@ -52,6 +52,7 @@ id -u haproxy >/dev/null 2>&1 || {
 }
 install -d -o haproxy -g haproxy -m 0750 /var/lib/haproxy
 install -d -o haproxy -g haproxy -m 0750 /var/log/haproxy
+install -d -o root -g haproxy -m 0750 /etc/haproxy
 install -d -o root -g haproxy -m 0750 /etc/haproxy/tls
 
 HAPROXY_VERSION='${haproxy_version}'
@@ -92,6 +93,7 @@ cat > /etc/init.d/haproxy <<'INITD'
 description="HAProxy LTS edge proxy"
 command="/usr/local/sbin/haproxy"
 command_args="-Ws -f /etc/haproxy/haproxy.cfg -p /run/haproxy.pid"
+command_user="root:root"
 env HAPROXY_MWORKER=1
 pidfile="/run/haproxy.pid"
 supervisor="supervise-daemon"
@@ -104,6 +106,10 @@ depend() {
 
 start_pre() {
 	checkpath -f /etc/haproxy/haproxy.cfg || { eerror "haproxy.cfg missing"; return 1; }
+	# /run is tmpfs and empty on every boot; haproxy.cfg's stats socket
+	# (/run/haproxy/admin.sock) needs this directory to exist before bind —
+	# confirmed live: "cannot bind UNIX socket (No such file or directory)".
+	checkpath -d -m 0750 -o root:haproxy /run/haproxy
 }
 
 reload() {
