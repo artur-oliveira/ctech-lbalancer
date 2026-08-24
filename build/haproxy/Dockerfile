@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-ARG ALPINE_VERSION
+ARG ALPINE_VERSION=3.23
 FROM alpine:${ALPINE_VERSION} AS build
 
 ARG HAPROXY_VERSION
@@ -18,7 +18,7 @@ RUN apk add --no-cache \
     && curl --fail --silent --show-error --location \
       "https://www.haproxy.org/download/${branch}/src/${tarball}" \
       --output "/tmp/${tarball}" \
-    && echo "${HAPROXY_SOURCE_SHA256}  /tmp/${tarball}" | sha256sum --check --strict \
+    && echo "${HAPROXY_SOURCE_SHA256}  /tmp/${tarball}" | sha256sum -c \
     && tar -xzf "/tmp/${tarball}" -C /tmp \
     && make -C "/tmp/haproxy-${HAPROXY_VERSION}" -j"$(nproc)" \
       TARGET=linux-musl \
