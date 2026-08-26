@@ -138,7 +138,10 @@ resource "aws_autoscaling_group" "this" {
   name                      = "${var.environment}-ctech-lbalancer${var.resource_suffix}"
   vpc_zone_identifier       = data.aws_subnets.public.ids
   min_size                  = 1
-  max_size                  = 1
+  # +1 over min_size: gives CapacityRebalance headroom to launch the
+  # replacement before terminating the spot-interrupted instance instead of
+  # waiting for it to go down first.
+  max_size                  = 2
   health_check_type         = "EC2"
   health_check_grace_period = 600
   capacity_rebalance        = true
