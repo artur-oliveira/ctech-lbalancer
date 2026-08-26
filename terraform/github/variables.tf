@@ -24,3 +24,17 @@ variable "publish_branches" {
     error_message = "publish_branches must contain at least one valid Git branch name."
   }
 }
+
+# main -> prod, staging -> stage, dev -> dev, matching terraform/lbalancer's
+# environment validation. Pull requests are deliberately absent — the PR job
+# needs no credentials at all.
+variable "deploy_branches" {
+  type        = list(string)
+  default     = ["main", "staging", "dev"]
+  description = "Branches whose push runs may assume the infra role."
+
+  validation {
+    condition     = length(var.deploy_branches) > 0 && alltrue([for branch in var.deploy_branches : can(regex("^[A-Za-z0-9._/-]+$", branch))])
+    error_message = "deploy_branches must contain at least one valid Git branch name."
+  }
+}
