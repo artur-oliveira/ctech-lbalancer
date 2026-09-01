@@ -1,19 +1,32 @@
-name: Infrastructure
+name: GitHub OIDC Roles
 
-# validate needs no AWS credentials at all — terraform validate -backend=false
-# only checks that the HCL parses. apply is the only job that assumes a role,
-# and only on a push to a deploy branch, never on a pull request.
+# Owns terraform/github: the two IAM roles GitHub Actions assumes
+# (ctech-lbalancer-gha-haproxy, ctech-lbalancer-gha-infra) plus their policies.
+# terraform/artifact is validated here but never applied by CI — it is a
+# workstation-only, deploy-once root.
+#
+# validate needs no AWS credentials (terraform validate -backend=false only
+# checks that the HCL parses). apply is the only job that assumes a role, and
+# only on a push to a deploy branch, never on a pull request.
+#
+# Chicken-and-egg: the role this apply job assumes (ctech-lbalancer-gha-infra)
+# is one of the roles this root manages. The roles were bootstrapped once from a
+# workstation (see README); the "Adopt pre-existing roles" step below imports
+# them into state so this root can converge them from then on without a 409
+# EntityAlreadyExists.
 
 on:
   pull_request:
     branches: [main, staging, dev]
     paths:
-      - 'terraform/**'
+      - 'terraform/github/**'
+      - 'terraform/artifact/**'
       - '.github/workflows/infra.yml'
   push:
     branches: [main, staging, dev]
     paths:
-      - 'terraform/**'
+      - 'terraform/github/**'
+      - 'terraform/artifact/**'
       - '.github/workflows/infra.yml'
 
 permissions:
@@ -22,10 +35,6 @@ permissions:
 env:
   TF_VERSION: 1.15.8
   AWS_REGION: us-east-1
-  # terraform/github's own apply is not run by this workflow — the role it
-  # creates is the role this workflow assumes, so the first apply has to come
-  # from the user, the same as every other terraform apply in this repo (see
-  # docs/plans/2026-08-23-alpine-lbalancer-migration.md).
   ROLE_ARN: arn:aws:iam::868899309401:role/ctech-lbalancer-gha-infra
 
 jobs:
@@ -48,7 +57,7 @@ jobs:
 
       - name: Validate roots
         run: |
-          for root in terraform/lbalancer terraform/github terraform/artifact; do
+          for root in terraform/github terraform/artifact; do
             echo "── $root"
             terraform -chdir="$root" init -backend=false -input=false
             terraform -chdir="$root" validate
@@ -69,58 +78,46 @@ jobs:
         with:
           terraform_version: ${{ env.TF_VERSION }}
 
-      - name: Resolve environment
-        id: env
-        env:
-          REF: ${{ github.ref_name }}
-        run: |
-          case "$REF" in
-            main)    echo "name=prod"  >> "$GITHUB_OUTPUT" ;;
-            staging) echo "name=stage" >> "$GITHUB_OUTPUT" ;;
-            *)       echo "name=dev"   >> "$GITHUB_OUTPUT" ;;
-          esac
-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
         with:
           role-to-assume: ${{ env.ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # var.vpc_id has no default — variables.tf documents it as
-      # "Read from /ctech/{env}/network/vpc-id (ctech-cdk NetworkStack output)",
-      # so read the same parameter here rather than pinning the id in a tfvars
-      # file that would drift the moment the network stack is recreated.
-      - name: Resolve VPC id
-        id: vpc
-        env:
-          ENVIRONMENT: ${{ steps.env.outputs.name }}
-        run: |
-          vpc_id=$(aws ssm get-parameter --name "/ctech/${ENVIRONMENT}/network/vpc-id" --query Parameter.Value --output text)
-          echo "vpc_id=$vpc_id" >> "$GITHUB_OUTPUT"
-
       - name: Apply — GitHub OIDC roles
         working-directory: terraform/github
         run: |
           terraform init -input=false
+
+          # Adopt any of this root's resources that already exist out-of-band
+          # (first run, or roles bootstrapped from a workstation) so apply
+          # converges them instead of failing with EntityAlreadyExists. Each
+          # import is skipped when the address is already in state, and tolerated
+          # when the remote object genuinely does not exist yet.
+          imports="
+          aws_iam_role.haproxy|ctech-lbalancer-gha-haproxy
+          aws_iam_role.infra|ctech-lbalancer-gha-infra
+          aws_iam_role_policy.haproxy|ctech-lbalancer-gha-haproxy:publish
+          aws_iam_role_policy_attachment.infra_admin|ctech-lbalancer-gha-infra/arn:aws:iam::aws:policy/AdministratorAccess
+          "
+          state="$(terraform state list || true)"
+          while IFS='|' read -r addr id; do
+            [ -n "$addr" ] || continue
+            if printf '%s\n' "$state" | grep -qxF "$addr"; then
+              echo "already in state: $addr"
+              continue
+            fi
+            echo "importing: $addr <- $id"
+            terraform import -input=false "$addr" "$id" || echo "import skipped for $addr (not found remotely)"
+          done <<< "$imports"
+
           terraform apply -auto-approve -input=false
 
-      - name: Apply — lbalancer
-        working-directory: terraform/lbalancer
-        env:
-          ENVIRONMENT: ${{ steps.env.outputs.name }}
-          VPC_ID: ${{ steps.vpc.outputs.vpc_id }}
-        run: |
-          terraform init -input=false
-          terraform workspace select -or-create "$ENVIRONMENT"
-          terraform apply -auto-approve -input=false \
-            -var="environment=${ENVIRONMENT}" \
-            -var="vpc_id=${VPC_ID}"
-
       - name: Summarise
-        working-directory: terraform/lbalancer
+        working-directory: terraform/github
         run: |
           {
-            echo "### Terraform (${{ steps.env.outputs.name }})"
+            echo "### GitHub OIDC roles"
             echo '```'
             terraform output -json | jq -r 'to_entries[] | "\(.key) = \(.value.value)"'
             echo '```'

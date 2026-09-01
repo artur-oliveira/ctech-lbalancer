@@ -116,7 +116,10 @@ AWS_PROFILE=ctech terraform apply
 # to publish the Alpine artifact before creating/replacing an Alpine instance.
 
 # 4. Per-environment load balancer stack.
+# No baked-in backend profile — export AWS_PROFILE for workstation runs
+# (CI uses short-lived OIDC credentials via .github/workflows/lbalancer.yml).
 cd ../lbalancer
+export AWS_PROFILE=ctech
 terraform init
 terraform workspace select prod || terraform workspace new prod
 terraform plan  -var-file=environments/prod.tfvars
