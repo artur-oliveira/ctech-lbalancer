@@ -38,7 +38,7 @@ variable "enable_ssm_agent" {
 
 variable "enable_internal_m2m" {
   type    = bool
-  default = false
+  default = true
 }
 
 variable "aws_account" {
