@@ -70,7 +70,7 @@ variable "manage_routes" {
 
 variable "os_family" {
   type    = string
-  default = "al2023"
+  default = "alpine"
   validation {
     condition     = contains(["al2023", "alpine"], var.os_family)
     error_message = "os_family must be al2023 or alpine."
