@@ -36,6 +36,12 @@ variable "enable_ssm_agent" {
   default = true
 }
 
+variable "enable_cloudwatch_logs" {
+  type        = bool
+  default     = true
+  description = "Stream HAProxy access and reconciler logs to CloudWatch Logs."
+}
+
 variable "enable_internal_m2m" {
   type    = bool
   default = true

@@ -22,6 +22,9 @@ RUNTIME_PACKAGES=(jq nftables rsyslog libxcrypt openssl-libs pcre2 zlib)
 if [ '${enable_ssm_agent}' = 'true' ]; then
   RUNTIME_PACKAGES+=(amazon-ssm-agent)
 fi
+if [ '${enable_cloudwatch_logs}' = 'true' ]; then
+  RUNTIME_PACKAGES+=(amazon-cloudwatch-agent)
+fi
 dnf install -y "$${RUNTIME_PACKAGES[@]}" tar gzip
 
 # Bring up the recovery path before the comparatively slow HAProxy source build.
@@ -149,7 +152,7 @@ if ($programname == 'haproxy') then {
 RSYSLOG
 
 cat > /etc/logrotate.d/ctech-lbalancer <<'LOGROTATE'
-/var/log/haproxy/access.log {
+/var/log/haproxy/access.log /var/log/ctech-lbalancer-reconcile.log {
   daily
   rotate 3
   size 20M
@@ -159,6 +162,27 @@ cat > /etc/logrotate.d/ctech-lbalancer <<'LOGROTATE'
   copytruncate
 }
 LOGROTATE
+
+touch /var/log/haproxy/access.log /var/log/ctech-lbalancer-reconcile.log
+chown haproxy:haproxy /var/log/haproxy/access.log
+chmod 0640 /var/log/haproxy/access.log /var/log/ctech-lbalancer-reconcile.log
+
+if [ '${enable_cloudwatch_logs}' = 'true' ]; then
+  mkdir -p /etc/systemd/system/amazon-cloudwatch-agent.service.d
+  cat > /etc/systemd/system/amazon-cloudwatch-agent.service.d/override.conf <<'CWAENV'
+[Service]
+Environment=AWS_USE_DUALSTACK_ENDPOINT=true
+CWAENV
+  cat > /tmp/cwagent.json <<'CWA'
+{
+  "agent": {"run_as_user":"root"},
+  "logs": {"logs_collected":{"files":{"collect_list":[
+    {"file_path":"/var/log/haproxy/access.log","log_group_name":"${access_log_group}","log_stream_name":"{instance_id}/access"},
+    {"file_path":"/var/log/ctech-lbalancer-reconcile.log","log_group_name":"${access_log_group}","log_stream_name":"{instance_id}/reconcile"}
+  ]}}}
+}
+CWA
+fi
 
 cat > /etc/systemd/system/ctech-cloudflare-ips.service <<'UNIT'
 [Unit]
@@ -195,6 +219,8 @@ Wants=network-online.target
 Type=oneshot
 Environment=AWS_USE_DUALSTACK_ENDPOINT=true
 ExecStart=/opt/ctech-lbalancer/reconcile.sh
+StandardOutput=append:/var/log/ctech-lbalancer-reconcile.log
+StandardError=append:/var/log/ctech-lbalancer-reconcile.log
 UNIT
 
 cat > /etc/systemd/system/ctech-lbalancer-reconcile.timer <<'UNIT'
@@ -217,3 +243,6 @@ systemctl enable nftables rsyslog
 systemctl restart rsyslog
 systemctl enable --now ctech-cloudflare-ips.timer ctech-lbalancer-reconcile.timer
 /opt/ctech-lbalancer/reconcile.sh || true
+if [ '${enable_cloudwatch_logs}' = 'true' ]; then
+  ctech_run setup-cloudwatch-agent.sh /tmp/cwagent.json
+fi

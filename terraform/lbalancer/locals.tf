@@ -35,11 +35,11 @@ locals {
   # Existing SPA hosts allowed to send credentialed cross-origin requests to
   # accounts-api's /token endpoint.
   spa_origins = [
-    local.domain_for_env["dfe"],
-    local.domain_for_env["wallet"],
-    local.domain_for_env["accounts"],
-    local.domain_for_env["billing"],
-    local.domain_for_env["poker"],
+    "https://${local.domain_for_env["dfe"]}",
+    "https://${local.domain_for_env["wallet"]}",
+    "https://${local.domain_for_env["accounts"]}",
+    "https://${local.domain_for_env["billing"]}",
+    "https://${local.domain_for_env["poker"]}",
   ]
 
   internal_lbalancer_domain = "lbalancer.${local.private_zone_name}"
@@ -66,7 +66,7 @@ locals {
     dfe = {
       hostname          = local.domain_for_env["dfe-api"]
       internal_hostname = local.internal_service_domain["dfe"]
-      cors_origin       = local.domain_for_env["dfe"]
+      cors_origin       = "https://${local.domain_for_env["dfe"]}"
       asg               = "${var.environment}-ctech-dfe"
       port              = 8080
       health_path       = "/v1.0/health-check"
@@ -76,7 +76,7 @@ locals {
     wallet = {
       hostname          = local.domain_for_env["wallet-api"]
       internal_hostname = local.internal_service_domain["wallet"]
-      cors_origin       = local.domain_for_env["wallet"]
+      cors_origin       = "https://${local.domain_for_env["wallet"]}"
       asg               = "${var.environment}-ctech-wallet"
       port              = 8080
       health_path       = "/v1.0/health-check"
@@ -86,7 +86,7 @@ locals {
     poker = {
       hostname          = local.domain_for_env["poker-api"]
       internal_hostname = local.internal_service_domain["poker"]
-      cors_origin       = local.domain_for_env["poker"]
+      cors_origin       = "https://${local.domain_for_env["poker"]}"
       asg               = "${var.environment}-ctech-poker"
       port              = 8080
       health_path       = "/v1.0/health-check"
@@ -96,7 +96,7 @@ locals {
     billing = {
       hostname          = local.domain_for_env["billing-api"]
       internal_hostname = local.internal_service_domain["billing"]
-      cors_origin       = local.domain_for_env["billing"]
+      cors_origin       = "https://${local.domain_for_env["billing"]}"
       asg               = "${var.environment}-ctech-billing"
       port              = 8080
       health_path       = "/v1.0/health-check"
@@ -104,5 +104,7 @@ locals {
       auto_heal         = true
     }
   }
+
+  access_log_group_name = "/ctech-lbalancer/${var.environment}/access${var.resource_suffix}"
 
 }

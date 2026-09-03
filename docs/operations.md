@@ -101,9 +101,11 @@ check all of the following:
   application IP;
 - unknown Host returns 421;
 - stopped target becomes HAProxy `DOWN` after about 15 seconds;
+- an allowed cross-origin `OPTIONS` request returns 204 with CORS headers even
+  while every target of that API is stopped;
 - replacement ASG target appears within about 30 seconds of reaching `InService`;
 - forced load-balancer instance termination causes its ASG to replace it and the
-  origin AAAA to update.
+  origin AAAA to update as soon as the replacement HAProxy starts listening.
 
 ## 4. Inspect health and configuration
 
@@ -136,6 +138,18 @@ sudo journalctl -u ctech-lbalancer-reconcile.service -n 100 --no-pager
 sudo /usr/local/sbin/haproxy -c -f /etc/haproxy/haproxy.cfg
 sudo nft list table inet ctech_edge
 ```
+
+With CloudWatch log streaming enabled (the default), verify both Alpine
+`ctech-ec2-agent` streams without opening a session:
+
+```bash
+aws logs tail /ctech-lbalancer/prod/access --since 10m --follow
+```
+
+Streams prefixed with `access/` contain HAProxy JSON access events; streams
+prefixed with `reconcile/` contain discovery, DNS, certificate and auto-heal
+failures. On AL2023 the stream names use `{instance_id}/access` and
+`{instance_id}/reconcile` instead.
 
 HAProxy does not forward to a target until two consecutive health checks pass.
 It stops forwarding after three failures. With `autoHeal=true`, the reconciler

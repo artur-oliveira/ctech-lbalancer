@@ -17,6 +17,70 @@ parameter() {
     --query 'Parameter.Value' --output text 2>/dev/null
 }
 
+publish_origin_ipv6() {
+  local imds_token mac ipv6 dns_state ssm_state cf_token api record record_id old_content old_proxied body response
+  imds_token=$(curl --silent --fail --max-time 2 -X PUT \
+    -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' \
+    http://169.254.169.254/latest/api/token) || return 0
+  mac=$(curl --silent --fail --max-time 2 -H "X-aws-ec2-metadata-token: $${imds_token}" \
+    http://169.254.169.254/latest/meta-data/mac) || return 0
+  ipv6=$(curl --silent --fail --max-time 2 -H "X-aws-ec2-metadata-token: $${imds_token}" \
+    "http://169.254.169.254/latest/meta-data/network/interfaces/macs/$${mac}/ipv6s" \
+    | head -n 1) || return 0
+  [ -n "$ipv6" ] || return 0
+
+  dns_state="$STATE_DIR/origin-dns-ipv6"
+  if [ -n '${cloudflare_zone_id}' ] && \
+      { [ ! -s "$dns_state" ] || [ "$(cat "$dns_state")" != "$ipv6" ]; }; then
+    cf_token=$(parameter '${cloudflare_token_path}' || true)
+    if [ -n "$cf_token" ]; then
+      api="https://api.cloudflare.com/client/v4/zones/${cloudflare_zone_id}/dns_records"
+      if record=$(curl --fail --silent --show-error --max-time 10 \
+          -H "Authorization: Bearer $${cf_token}" \
+          "$${api}?type=AAAA&name=${origin_domain}") && \
+          jq -e '.success == true' >/dev/null <<<"$record"; then
+        record_id=$(jq -r '.result[0].id // empty' <<<"$record")
+        old_content=$(jq -r '.result[0].content // empty' <<<"$record")
+        old_proxied=$(jq -r '.result[0].proxied // empty' <<<"$record")
+        body=$(jq -cn --arg name '${origin_domain}' --arg content "$ipv6" \
+          '{type:"AAAA",name:$name,content:$content,ttl:60,proxied:false}')
+        response=''
+        if [ -n "$record_id" ] && \
+            { [ "$old_content" != "$ipv6" ] || [ "$old_proxied" != 'false' ]; }; then
+          response=$(curl --fail --silent --show-error --max-time 10 -X PUT \
+            -H "Authorization: Bearer $${cf_token}" -H 'Content-Type: application/json' \
+            --data "$body" "$${api}/$${record_id}" || true)
+        elif [ -z "$record_id" ]; then
+          response=$(curl --fail --silent --show-error --max-time 10 -X POST \
+            -H "Authorization: Bearer $${cf_token}" -H 'Content-Type: application/json' \
+            --data "$body" "$api" || true)
+        else
+          response='{"success":true}'
+        fi
+        if jq -e '.success == true' >/dev/null <<<"$response"; then
+          printf '%s\n' "$ipv6" > "$dns_state"
+        else
+          echo 'Cloudflare origin AAAA update failed; retrying next reconciliation' >&2
+        fi
+      else
+        echo 'Cloudflare origin AAAA lookup failed; retrying next reconciliation' >&2
+      fi
+    else
+      echo 'Cloudflare DNS token unavailable; retrying next reconciliation' >&2
+    fi
+  fi
+
+  ssm_state="$STATE_DIR/origin-ssm-ipv6"
+  if [ ! -s "$ssm_state" ] || [ "$(cat "$ssm_state")" != "$ipv6" ]; then
+    if aws ssm put-parameter --name '${origin_ipv6_path}' --type String \
+        --value "$ipv6" --overwrite >/dev/null; then
+      printf '%s\n' "$ipv6" > "$ssm_state"
+    else
+      echo 'Origin IPv6 SSM mirror update failed; retrying next reconciliation' >&2
+    fi
+  fi
+}
+
 certificate_matches_key() {
   local bundle=$1 cert_digest key_digest
   cert_digest=$(openssl x509 -in "$bundle" -pubkey -noout \
@@ -93,7 +157,13 @@ if [ '${enable_internal_m2m}' = 'true' ]; then
 fi
 
 routes=$(aws ssm get-parameters-by-path --path '${routes_path}' --recursive \
-  --output json | jq -ce '[.Parameters[].Value | fromjson]')
+  --output json | jq -ce '[.Parameters[].Value | fromjson |
+      if (.corsOrigin // null) == null then .
+      elif (.corsOrigin | type) == "string" then
+        .corsOrigin |= if startswith("https://") then . else "https://" + . end
+      elif (.corsOrigin | type) == "array" then
+        .corsOrigin |= map(if startswith("https://") then . else "https://" + . end)
+      else . end]')
 
 jq -e '
   all(.[];
@@ -102,9 +172,9 @@ jq -e '
       (.internalHostname | type == "string" and
         test("^[a-z0-9]([a-z0-9.-]*[a-z0-9])?\\.${private_zone_name}$"))) and
     ((.corsOrigin // null) == null or
-      (.corsOrigin | type == "string" and test("^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$")) or
+      (.corsOrigin | type == "string" and test("^https://[a-z0-9]([a-z0-9.-]*[a-z0-9])?$")) or
       (.corsOrigin | type == "array" and length > 0 and
-        all(.[]; type == "string" and test("^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$")))) and
+        all(.[]; type == "string" and test("^https://[a-z0-9]([a-z0-9.-]*[a-z0-9])?$")))) and
     (.asg | type == "string" and test("^[A-Za-z0-9+=,.@_-]+$")) and
     (.port | type == "number" and . >= 1 and . <= 65535 and floor == .) and
     (.healthPath | type == "string" and test("^/[-A-Za-z0-9._~/?=&%]*$")) and
@@ -231,8 +301,9 @@ for ((index=0; index<route_count; index++)); do
   case "$cors_type" in
   string)
     cors_origin=$(jq -r ".[$${index}].corsOrigin" <<<"$resolved")
-    printf '  http-request set-var(txn.cors_origin) str(%s) if route_%d\n' "$cors_origin" "$index" >> "$new_config"
-    printf '  http-request set-var(txn.cors_credentials) str(true) if route_%d\n' "$index" >> "$new_config"
+    printf '  acl origin_allowed_%d hdr(origin),lower -m str %s\n' "$index" "$cors_origin" >> "$new_config"
+    printf '  http-request set-var(txn.cors_origin) req.hdr(origin) if route_%d origin_allowed_%d\n' "$index" "$index" >> "$new_config"
+    printf '  http-request set-var(txn.cors_credentials) str(true) if route_%d origin_allowed_%d\n' "$index" "$index" >> "$new_config"
     ;;
   array)
     # Multiple known SPAs legitimately call this host cross-origin (e.g.
@@ -244,7 +315,9 @@ for ((index=0; index<route_count; index++)); do
     printf '  http-request set-var(txn.cors_credentials) str(true) if route_%d origin_allowed_%d\n' "$index" "$index" >> "$new_config"
     ;;
   esac
-  printf '  http-request return status 204 hdr Access-Control-Allow-Origin %%[var(txn.cors_origin)] hdr Access-Control-Allow-Credentials true hdr Access-Control-Allow-Methods "GET,POST,PUT,PATCH,DELETE,OPTIONS" hdr Access-Control-Allow-Headers "Authorization,Content-Type" hdr Access-Control-Max-Age 86400 hdr Vary Origin if route_%d METH_OPTIONS { var(txn.cors_origin) -m found } { nbsrv(route_%d) eq 0 }\n' "$index" "$index" >> "$new_config"
+  # Preflight is an edge concern. Answer every allowed OPTIONS request here so
+  # CORS remains deterministic even while the selected API is down or flapping.
+  printf '  http-request return status 204 hdr Access-Control-Allow-Origin %%[var(txn.cors_origin)] hdr Access-Control-Allow-Credentials true hdr Access-Control-Allow-Methods "GET,POST,PUT,PATCH,DELETE,OPTIONS" hdr Access-Control-Allow-Headers "Origin,Content-Type,Authorization,X-Request-ID,Idempotency-Key,X-Billing-Mode" hdr Access-Control-Max-Age 86400 hdr Vary Origin if route_%d METH_OPTIONS { var(txn.cors_origin) -m found }\n' "$index" >> "$new_config"
 done
 # HAProxy evaluates http-request rules before use_backend regardless of their
 # textual order and warns when the file suggests otherwise. Emit every request
@@ -256,6 +329,8 @@ printf '  default_backend unknown_host\n' >> "$new_config"
 cat >> "$new_config" <<'HAPROXY'
   http-after-response set-header Access-Control-Allow-Origin %[var(txn.cors_origin)] if { var(txn.cors_origin) -m found } { status 503 }
   http-after-response set-header Access-Control-Allow-Credentials true if { var(txn.cors_credentials) -m found } { status 503 }
+  http-after-response set-header Access-Control-Allow-Methods "GET,POST,PUT,PATCH,DELETE,OPTIONS" if { var(txn.cors_origin) -m found } { status 503 }
+  http-after-response set-header Access-Control-Allow-Headers "Origin,Content-Type,Authorization,X-Request-ID,Idempotency-Key,X-Billing-Mode" if { var(txn.cors_origin) -m found } { status 503 }
   http-after-response set-header Vary Origin if { var(txn.cors_origin) -m found } { status 503 }
 HAPROXY
 
@@ -341,6 +416,8 @@ else
   systemctl enable --now haproxy
 fi
 
+publish_origin_ipv6
+
 # App-level auto-healing: HAProxy immediately stops routing after its own fall
 # threshold. Three failed reconciliations then mark only the stuck ASG instance
 # unhealthy, so the ASG replaces it. The 3-minute launch guard prevents loops.
@@ -379,8 +456,7 @@ for ((index=0; index<route_count; index++)); do
   done
 done
 
-# Publish this ASG member's current IPv6 for operations and optionally maintain
-# the one DNS-only origin AAAA record. Public hostnames remain proxied CNAMEs.
+# Maintain the private Route 53 address independently from the public AAAA.
 imds_token=$(curl --silent --fail --max-time 2 -X PUT \
   -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' \
   http://169.254.169.254/latest/api/token || true)
@@ -404,46 +480,6 @@ if [ -n "$imds_token" ]; then
         printf '%s\n' "$private_ipv4" > "$private_dns_state"
       else
         echo 'Private load-balancer DNS update failed; HAProxy remains active' >&2
-      fi
-    fi
-  fi
-
-  mac=$(curl --silent --fail --max-time 2 -H "X-aws-ec2-metadata-token: $${imds_token}" \
-    http://169.254.169.254/latest/meta-data/mac || true)
-  ipv6=$(curl --silent --fail --max-time 2 -H "X-aws-ec2-metadata-token: $${imds_token}" \
-    "http://169.254.169.254/latest/meta-data/network/interfaces/macs/$${mac}/ipv6s" \
-    | head -n 1 || true)
-  if [ -n "$ipv6" ]; then
-    aws ssm put-parameter --name '${origin_ipv6_path}' --type String \
-      --value "$ipv6" --overwrite >/dev/null
-    if [ -n '${cloudflare_zone_id}' ]; then
-      cf_token=$(parameter '${cloudflare_token_path}' || true)
-      if [ -n "$cf_token" ]; then
-        api="https://api.cloudflare.com/client/v4/zones/${cloudflare_zone_id}/dns_records"
-        if record=$(curl --fail --silent --show-error --max-time 10 \
-            -H "Authorization: Bearer $${cf_token}" \
-            "$${api}?type=AAAA&name=${origin_domain}"); then
-          record_id=$(jq -r '.result[0].id // empty' <<<"$record")
-          old_content=$(jq -r '.result[0].content // empty' <<<"$record")
-          old_proxied=$(jq -r '.result[0].proxied // empty' <<<"$record")
-          body=$(jq -cn --arg name '${origin_domain}' --arg content "$ipv6" \
-            '{type:"AAAA",name:$name,content:$content,ttl:60,proxied:false}')
-          if [ -n "$record_id" ] && \
-              { [ "$old_content" != "$ipv6" ] || [ "$old_proxied" != 'false' ]; }; then
-            curl --fail --silent --show-error --max-time 10 -X PUT \
-              -H "Authorization: Bearer $${cf_token}" \
-              -H 'Content-Type: application/json' --data "$body" \
-              "$${api}/$${record_id}" >/dev/null || \
-              echo 'Cloudflare origin AAAA update failed; HAProxy remains active' >&2
-          elif [ -z "$record_id" ]; then
-            curl --fail --silent --show-error --max-time 10 -X POST \
-              -H "Authorization: Bearer $${cf_token}" \
-              -H 'Content-Type: application/json' --data "$body" "$api" >/dev/null || \
-              echo 'Cloudflare origin AAAA creation failed; HAProxy remains active' >&2
-          fi
-        else
-          echo 'Cloudflare origin AAAA lookup failed; HAProxy remains active' >&2
-        fi
       fi
     fi
   fi

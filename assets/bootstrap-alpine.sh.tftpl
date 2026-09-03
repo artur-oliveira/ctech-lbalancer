@@ -132,7 +132,7 @@ if ($programname == 'haproxy') then {
 RSYSLOG
 
 cat > /etc/logrotate.d/ctech-lbalancer <<'LOGROTATE'
-/var/log/haproxy/access.log {
+/var/log/haproxy/access.log /var/log/ctech-lbalancer-reconcile.log {
   daily
   rotate 3
   size 20M
@@ -142,6 +142,24 @@ cat > /etc/logrotate.d/ctech-lbalancer <<'LOGROTATE'
   copytruncate
 }
 LOGROTATE
+
+touch /var/log/haproxy/access.log /var/log/ctech-lbalancer-reconcile.log
+chown haproxy:haproxy /var/log/haproxy/access.log
+chmod 0640 /var/log/haproxy/access.log /var/log/ctech-lbalancer-reconcile.log
+
+if [ '${enable_cloudwatch_logs}' = 'true' ]; then
+  # The Alpine AMI's small Go agent is the proven log shipper used by
+  # ctech-billing; it avoids the much larger CloudWatch Agent on t4g.nano.
+  cat > /tmp/ctech-lbalancer-logs.json <<'LOGS'
+{
+  "logGroup": "${access_log_group}",
+  "files": [
+    { "path": "/var/log/haproxy/access.log", "streamPrefix": "access" },
+    { "path": "/var/log/ctech-lbalancer-reconcile.log", "streamPrefix": "reconcile" }
+  ]
+}
+LOGS
+fi
 
 cat > /etc/init.d/ctech-cloudflare-ips <<'INITD'
 #!/sbin/openrc-run
@@ -200,9 +218,15 @@ chmod 0750 /opt/ctech-lbalancer/reconcile-loop.sh
 rc-update add nftables default
 rc-update add rsyslog default
 rc-service rsyslog restart
-/opt/ctech-lbalancer/refresh-cloudflare-ips.sh
 rc-update add ctech-cloudflare-ips default
+# Starting this oneshot performs the initial refresh. Calling the script first
+# would repeat all Cloudflare and AWS range lookups and delay first readiness.
 rc-service ctech-cloudflare-ips start
 rc-update add ctech-lbalancer-reconcile default
 rc-service ctech-lbalancer-reconcile start
 /opt/ctech-lbalancer/reconcile.sh || true
+if [ '${enable_cloudwatch_logs}' = 'true' ]; then
+  # Readiness and the Cloudflare AAAA update have priority; logs-tail catches
+  # up from byte zero after the first reconciliation has been started.
+  ctech_run setup-ctech-ec2-agent.sh /tmp/ctech-lbalancer-logs.json lbalancer
+fi

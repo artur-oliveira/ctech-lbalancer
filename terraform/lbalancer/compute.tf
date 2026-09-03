@@ -28,6 +28,8 @@ locals {
     private_zone_name                   = local.private_zone_name
     internal_lbalancer_domain           = local.internal_lbalancer_domain
     enable_ssm_agent                    = tostring(var.enable_ssm_agent)
+    enable_cloudwatch_logs              = tostring(var.enable_cloudwatch_logs)
+    access_log_group                    = local.access_log_group_name
     haproxy_artifact_bucket             = data.aws_s3_bucket.artifacts.bucket
     haproxy_artifact_sha256_path        = local.ssm_paths.haproxy_artifact_sha256
     haproxy_artifact_sha256_alpine_path = local.ssm_paths.haproxy_artifact_sha256_alpine
@@ -48,25 +50,47 @@ locals {
 
   bootstrap_sh = var.os_family == "alpine" ? templatefile("${path.module}/../../assets/bootstrap-alpine.sh.tftpl", local.userdata_template_vars) : templatefile("${path.module}/../../assets/bootstrap.sh.tftpl", local.userdata_template_vars)
 
-  # Same gzip+base64 install pattern as user-data.ts:32-38 — keeps the combined
-  # user_data payload under EC2's 16 KiB launch-template limit.
+  runtime_scripts = {
+    "reconcile.sh"              = local.reconcile_sh
+    "refresh-cloudflare-ips.sh" = local.refresh_cloudflare_ips_sh
+    "bootstrap.sh"              = local.bootstrap_sh
+  }
+
+  # Keep user data far below EC2's 16 KiB decoded limit. The rendered scripts
+  # are immutable, content-addressed S3 objects; referencing their keys here
+  # also creates the dependency that uploads them before an instance can boot.
   user_data = base64encode(<<-EOF
     #!/bin/bash
     set -euxo pipefail
     mkdir -p /opt/ctech-lbalancer /etc/haproxy/tls /var/lib/haproxy /var/log/haproxy
 
-    echo '${base64gzip(local.reconcile_sh)}' | base64 -d | gzip -d > /opt/ctech-lbalancer/reconcile.sh
-    chmod 0750 /opt/ctech-lbalancer/reconcile.sh
-
-    echo '${base64gzip(local.refresh_cloudflare_ips_sh)}' | base64 -d | gzip -d > /opt/ctech-lbalancer/refresh-cloudflare-ips.sh
-    chmod 0750 /opt/ctech-lbalancer/refresh-cloudflare-ips.sh
-
-    echo '${base64gzip(local.bootstrap_sh)}' | base64 -d | gzip -d > /opt/ctech-lbalancer/bootstrap.sh
-    chmod 0750 /opt/ctech-lbalancer/bootstrap.sh
+    ${join("\n", [for name in sort(keys(local.runtime_scripts)) : var.os_family == "alpine" ?
+    "ctech-ec2-agent s3-cp -bucket '${data.aws_s3_bucket.artifacts.bucket}' -key '${aws_s3_object.runtime_script[name].key}' -dest '/opt/ctech-lbalancer/${name}' >/dev/null" :
+    "aws s3 cp 's3://${data.aws_s3_bucket.artifacts.bucket}/${aws_s3_object.runtime_script[name].key}' '/opt/ctech-lbalancer/${name}' >/dev/null"
+])}
+    chmod 0750 /opt/ctech-lbalancer/*.sh
 
     /opt/ctech-lbalancer/bootstrap.sh
     EOF
-  )
+)
+}
+
+resource "aws_s3_object" "runtime_script" {
+  for_each = local.runtime_scripts
+
+  bucket                 = data.aws_s3_bucket.artifacts.bucket
+  key                    = "runtime/${var.environment}/${sha256(each.value)}/${each.key}"
+  content                = each.value
+  content_type           = "text/x-shellscript"
+  server_side_encryption = "AES256"
+  source_hash            = sha256(each.value)
+}
+
+check "ec2_user_data_size" {
+  assert {
+    condition     = length(base64decode(local.user_data)) <= 16384
+    error_message = "Decoded EC2 user data exceeds the 16 KiB API limit; keep runtime scripts in content-addressed S3 objects."
+  }
 }
 
 resource "aws_launch_template" "this" {
@@ -132,6 +156,13 @@ resource "aws_launch_template" "this" {
   lifecycle {
     create_before_destroy = true
   }
+
+  # Instances need Parameter Store, Cloudflare-DNS inputs and log-stream
+  # permissions on their very first boot, not eventually after IAM converges.
+  depends_on = [
+    aws_iam_role_policy.instance,
+    aws_iam_role_policy_attachment.ssm_managed_instance_core,
+  ]
 }
 
 resource "aws_autoscaling_group" "this" {

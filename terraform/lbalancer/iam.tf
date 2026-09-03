@@ -115,6 +115,20 @@ data "aws_iam_policy_document" "instance" {
     resources = ["*"]
   }
 
+  dynamic "statement" {
+    for_each = var.enable_cloudwatch_logs ? [1] : []
+    content {
+      sid = "StreamLoadBalancerLogs"
+      actions = [
+        "logs:CreateLogStream",
+        "logs:PutLogEvents",
+        "logs:DescribeLogStreams",
+        "logs:DescribeLogGroups",
+      ]
+      resources = ["${aws_cloudwatch_log_group.access[0].arn}:*"]
+    }
+  }
+
   # Auto-healing is route opt-in. SetInstanceHealth has no useful dynamic
   # resource scope because future routes can name ASGs without changing this policy.
   statement {

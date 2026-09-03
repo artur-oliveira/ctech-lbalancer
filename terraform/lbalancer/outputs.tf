@@ -30,6 +30,10 @@ output "ssm_agent_enabled" {
   value = var.enable_ssm_agent
 }
 
+output "cloudwatch_logs_enabled" {
+  value = var.enable_cloudwatch_logs
+}
+
 output "internal_m2m_enabled" {
   value = var.enable_internal_m2m
 }

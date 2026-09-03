@@ -40,6 +40,9 @@ RAM on a nano; open-source nginx needs more care for changing upstream IPs.
   S3 bucket; its complete object key is the bundle's SHA-256, recorded in a
   versioned SSM parameter. Instances have read-only artifact access and fail
   bootstrap rather than compiling on the nano if the artifact is unavailable.
+- Rendered runtime scripts are also stored under content-addressed keys in the
+  existing artifact bucket. EC2 user data only downloads those immutable
+  objects, keeping it safely below EC2's 16 KiB limit as the reconciler grows.
 - Every 30 seconds the instance discovers all healthy `InService` members of the
   registered Auto Scaling Groups, validates a generated HAProxy config, and
   gracefully reloads only if something changed.
@@ -47,7 +50,9 @@ RAM on a nano; open-source nginx needs more care for changing upstream IPs.
   the target from traffic. When `autoHeal` is true, three failed 30-second
   reconciliations mark the instance unhealthy in its ASG, which replaces it.
 - The load balancer is itself a size-one ASG. EC2/system failure replaces it;
-  the replacement updates the single Cloudflare origin AAAA record.
+  as soon as the replacement HAProxy is listening, it updates the single
+  Cloudflare origin AAAA record before running slower auto-heal probes. Failed
+  API writes retry every 30 seconds, while successful values are cached locally.
 - For the public IPv6 path, `nftables` accepts port 443 only from Cloudflare's
   published ranges.
   HAProxy then requires a zone-specific Authenticated Origin Pull client
@@ -214,9 +219,9 @@ load balancer. The helper above also creates the private CNAME; service CDK
 should own it for permanent routes. The service security group must allow its port from the shared
 edge SG; current services already do this because that SG is the former ALB SG.
 
-## Metrics
+## Logs and metrics
 
-The lowest-cost default is local HAProxy observability:
+The lowest-overhead inspection path is local HAProxy observability:
 
 ```bash
 aws ssm start-session --target INSTANCE_ID \
@@ -227,16 +232,16 @@ aws ssm start-session --target INSTANCE_ID \
 Open `http://127.0.0.1:8404/stats` or scrape `/metrics`. HAProxy exposes 2xx,
 3xx, 4xx, and 5xx counters by frontend/backend/server at no AWS metric cost.
 
-Persistent CloudWatch request counts and latency breakdowns are enabled by
-default. This ships JSON access logs and creates four
-status metric filters plus five request/latency metric filters in
-`CtechLoadBalancer/{env}`. Set `ENABLE_CLOUDWATCH_METRICS=false` to choose the
-lowest-cost local-only mode. The nine custom metrics cost about $2.70/month
-before log ingestion, and service nginx log groups already produce similar
-per-service counters. The latency metrics are
-reported in milliseconds: `QueueLatencyMilliseconds`,
-`BackendConnectLatencyMilliseconds`, `BackendResponseLatencyMilliseconds`, and
-`TotalLatencyMilliseconds`.
+CloudWatch log streaming is enabled by default. HAProxy JSON access events and
+reconciler diagnostics are sent to
+`/ctech-lbalancer/{env}/access`, with 30-day retention in production and 7 days
+elsewhere. Alpine uses the lightweight, AMI-embedded
+`ctech-ec2-agent logs-tail` path already used by `ctech-billing`; the legacy
+AL2023 path uses the standard `amazon-cloudwatch-agent`.
+
+No custom CloudWatch metrics are created in the frugal phase. Request/status
+and latency aggregations can be queried from the structured logs or read from
+HAProxy's local Prometheus endpoint without the fixed per-series cost.
 
 ## Cost envelope (us-east-1, 730-hour month)
 
@@ -249,7 +254,11 @@ reported in milliseconds: `QueueLatencyMilliseconds`,
 | existing private hosted zone     |          about $0.50/mo |   about $0.50/mo |
 | HAProxy S3 artifact              |                 <$0.01 |          <$0.01 |
 | local stats/Prometheus           |                     $0 |              $0 |
-| CloudWatch HTTP metrics (default) |          about $2.70/mo | about $2.70/mo |
+| CloudWatch custom metrics        |                     $0 |              $0 |
+
+CloudWatch Logs storage/ingestion is usage-based and therefore not included as
+a fixed monthly line item. Disable it with `enable_cloudwatch_logs = false` if
+local-only observability is preferable in a temporary environment.
 
 The ALB base fee alone is about $16.43/month before LCU usage. Normal EC2 data
 transfer still applies. Cross-AZ backend traffic can add regional transfer cost;
