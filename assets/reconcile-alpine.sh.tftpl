@@ -264,7 +264,7 @@ defaults
   timeout http-keep-alive 15s
   timeout tunnel 1h
   retries 2
-  http-error status 503 content-type application/json string '{"message": "Unavailable service"}'
+  http-error status 503 content-type application/problem+json string '{"type":"about:blank","title":"Service Unavailable","status":503,"detail":"No backend server is currently available to handle this request."}'
 
 frontend https
   bind :::443 v6only ssl strict-sni crt /etc/haproxy/tls/origin.pem ca-file /etc/haproxy/tls/aop-ca.pem verify required alpn h2,http/1.1
@@ -308,7 +308,6 @@ for ((index=0; index<route_count; index++)); do
     printf '  acl origin_allowed_%d hdr(origin),lower -m str %s\n' "$index" "$cors_origin" >> "$new_config"
     printf '  http-request set-var(txn.cors_origin) req.hdr(origin) if route_%d origin_allowed_%d\n' "$index" "$index" >> "$new_config"
     printf '  http-request set-var(txn.cors_credentials) str(true) if route_%d origin_allowed_%d\n' "$index" "$index" >> "$new_config"
-    printf '  http-request set-var(txn.cors_headers) str(%s) if route_%d origin_allowed_%d\n' "$cors_headers" "$index" "$index" >> "$new_config"
     ;;
   array)
     # Multiple known SPAs legitimately call this host cross-origin (e.g.
@@ -318,17 +317,23 @@ for ((index=0; index<route_count; index++)); do
     printf '  acl origin_allowed_%d hdr(origin),lower -m str %s\n' "$index" "$${cors_origins[*]}" >> "$new_config"
     printf '  http-request set-var(txn.cors_origin) req.hdr(origin) if route_%d origin_allowed_%d\n' "$index" "$index" >> "$new_config"
     printf '  http-request set-var(txn.cors_credentials) str(true) if route_%d origin_allowed_%d\n' "$index" "$index" >> "$new_config"
-    printf '  http-request set-var(txn.cors_headers) str(%s) if route_%d origin_allowed_%d\n' "$cors_headers" "$index" "$index" >> "$new_config"
     ;;
   esac
   # The backend owns CORS (it knows its real allowed headers/methods) and
   # answers its own preflights whenever it has at least one healthy server.
   # Only when the backend has none do we short-circuit here, so preflight
   # still resolves deterministically instead of failing behind a dead ASG.
-  # Allow-Headers still comes from this route's own corsAllowedHeaders (set
-  # above), so the fallback never grants headers this service doesn't expect.
+  # Allow-Headers is this route's own corsAllowedHeaders, inlined literally:
+  # HAProxy's fetch-argument parser splits on unescaped commas, so a joined
+  # header list can only be embedded as a plain hdr/set-header string, never
+  # passed through str()/set-var.
   printf '  acl backend_down_%d nbsrv(route_%d) eq 0\n' "$index" "$index" >> "$new_config"
-  printf '  http-request return status 204 hdr Access-Control-Allow-Origin %%[var(txn.cors_origin)] hdr Access-Control-Allow-Credentials true hdr Access-Control-Allow-Methods "GET,POST,PUT,PATCH,DELETE,OPTIONS" hdr Access-Control-Allow-Headers %%[var(txn.cors_headers)] hdr Access-Control-Max-Age 86400 hdr Vary Origin if route_%d METH_OPTIONS backend_down_%d { var(txn.cors_origin) -m found }\n' "$index" "$index" >> "$new_config"
+  printf '  http-request return status 204 hdr Access-Control-Allow-Origin %%[var(txn.cors_origin)] hdr Access-Control-Allow-Credentials true hdr Access-Control-Allow-Methods "GET,POST,PUT,PATCH,DELETE,OPTIONS" hdr Access-Control-Allow-Headers "%s" hdr Access-Control-Max-Age 86400 hdr Vary Origin if route_%d METH_OPTIONS backend_down_%d { var(txn.cors_origin) -m found }\n' "$cors_headers" "$index" "$index" >> "$new_config"
+  # http-after-response can't reuse the route_%d ACL: it fetches the request's
+  # Host header, which isn't available once response-phase rules run. Match
+  # the already-selected backend name instead — use_backend has, by this
+  # point, always routed the request here even though no server answered it.
+  printf '  http-after-response set-header Access-Control-Allow-Headers %s if { var(txn.cors_origin) -m found } { status 503 } { be_name -m str route_%d }\n' "$cors_headers" "$index" >> "$new_config"
 done
 # HAProxy evaluates http-request rules before use_backend regardless of their
 # textual order and warns when the file suggests otherwise. Emit every request
@@ -341,7 +346,6 @@ cat >> "$new_config" <<'HAPROXY'
   http-after-response set-header Access-Control-Allow-Origin %[var(txn.cors_origin)] if { var(txn.cors_origin) -m found } { status 503 }
   http-after-response set-header Access-Control-Allow-Credentials true if { var(txn.cors_credentials) -m found } { status 503 }
   http-after-response set-header Access-Control-Allow-Methods "GET,POST,PUT,PATCH,DELETE,OPTIONS" if { var(txn.cors_origin) -m found } { status 503 }
-  http-after-response set-header Access-Control-Allow-Headers %[var(txn.cors_headers)] if { var(txn.cors_origin) -m found } { status 503 }
   http-after-response set-header Vary Origin if { var(txn.cors_origin) -m found } { status 503 }
 HAPROXY
 
