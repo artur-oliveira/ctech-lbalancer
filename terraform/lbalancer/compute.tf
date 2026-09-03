@@ -13,6 +13,7 @@ locals {
     haproxy_version                     = local.haproxy_version
     haproxy_source_sha256               = local.haproxy_source_sha256
     routes_path                         = local.ssm_paths.routes
+    cors_allowed_headers_default        = jsonencode(local.cors_allowed_headers_base)
     origin_ipv6_path                    = local.ssm_paths.origin_ipv6
     tls_certificate_path                = local.ssm_paths.tls_certificate
     tls_private_key_path                = local.ssm_paths.tls_private_key

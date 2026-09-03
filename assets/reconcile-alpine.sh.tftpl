@@ -157,13 +157,15 @@ if [ '${enable_internal_m2m}' = 'true' ]; then
 fi
 
 routes=$(ctech-ec2-agent ssm-get-by-path -path '${routes_path}' \
-  | jq -ce '[.Parameters[].Value | fromjson |
+  | jq -ce --argjson defaultHeaders '${cors_allowed_headers_default}' \
+    '[.Parameters[].Value | fromjson |
       if (.corsOrigin // null) == null then .
       elif (.corsOrigin | type) == "string" then
         .corsOrigin |= if startswith("https://") then . else "https://" + . end
       elif (.corsOrigin | type) == "array" then
         .corsOrigin |= map(if startswith("https://") then . else "https://" + . end)
-      else . end]')
+      else . end |
+      .corsAllowedHeaders |= (if (. // null) == null then $defaultHeaders else . end)]')
 
 jq -e '
   all(.[];
@@ -175,6 +177,8 @@ jq -e '
       (.corsOrigin | type == "string" and test("^https://[a-z0-9]([a-z0-9.-]*[a-z0-9])?$")) or
       (.corsOrigin | type == "array" and length > 0 and
         all(.[]; type == "string" and test("^https://[a-z0-9]([a-z0-9.-]*[a-z0-9])?$")))) and
+    (.corsAllowedHeaders | type == "array" and length > 0 and
+      all(.[]; type == "string" and test("^[A-Za-z0-9!#$%&'"'"'*+.^_`|~-]+$"))) and
     (.asg | type == "string" and test("^[A-Za-z0-9+=,.@_-]+$")) and
     (.port | type == "number" and . >= 1 and . <= 65535 and floor == .) and
     (.healthPath | type == "string" and test("^/[-A-Za-z0-9._~/?=&%]*$")) and
@@ -296,6 +300,7 @@ route_count=$(jq 'length' <<<"$resolved")
 for ((index=0; index<route_count; index++)); do
   hostname=$(jq -r ".[$${index}].hostname" <<<"$resolved")
   cors_type=$(jq -r ".[$${index}].corsOrigin | type" <<<"$resolved")
+  cors_headers=$(jq -r ".[$${index}].corsAllowedHeaders | join(\",\")" <<<"$resolved")
   printf '  acl route_%d hdr(host),lower -i %s\n' "$index" "$hostname" >> "$new_config"
   case "$cors_type" in
   string)
@@ -303,6 +308,7 @@ for ((index=0; index<route_count; index++)); do
     printf '  acl origin_allowed_%d hdr(origin),lower -m str %s\n' "$index" "$cors_origin" >> "$new_config"
     printf '  http-request set-var(txn.cors_origin) req.hdr(origin) if route_%d origin_allowed_%d\n' "$index" "$index" >> "$new_config"
     printf '  http-request set-var(txn.cors_credentials) str(true) if route_%d origin_allowed_%d\n' "$index" "$index" >> "$new_config"
+    printf '  http-request set-var(txn.cors_headers) str(%s) if route_%d origin_allowed_%d\n' "$cors_headers" "$index" "$index" >> "$new_config"
     ;;
   array)
     # Multiple known SPAs legitimately call this host cross-origin (e.g.
@@ -312,11 +318,17 @@ for ((index=0; index<route_count; index++)); do
     printf '  acl origin_allowed_%d hdr(origin),lower -m str %s\n' "$index" "$${cors_origins[*]}" >> "$new_config"
     printf '  http-request set-var(txn.cors_origin) req.hdr(origin) if route_%d origin_allowed_%d\n' "$index" "$index" >> "$new_config"
     printf '  http-request set-var(txn.cors_credentials) str(true) if route_%d origin_allowed_%d\n' "$index" "$index" >> "$new_config"
+    printf '  http-request set-var(txn.cors_headers) str(%s) if route_%d origin_allowed_%d\n' "$cors_headers" "$index" "$index" >> "$new_config"
     ;;
   esac
-  # Preflight is an edge concern. Answer every allowed OPTIONS request here so
-  # CORS remains deterministic even while the selected API is down or flapping.
-  printf '  http-request return status 204 hdr Access-Control-Allow-Origin %%[var(txn.cors_origin)] hdr Access-Control-Allow-Credentials true hdr Access-Control-Allow-Methods "GET,POST,PUT,PATCH,DELETE,OPTIONS" hdr Access-Control-Allow-Headers "Origin,Content-Type,Authorization,X-Request-ID,Idempotency-Key,X-Billing-Mode" hdr Access-Control-Max-Age 86400 hdr Vary Origin if route_%d METH_OPTIONS { var(txn.cors_origin) -m found }\n' "$index" >> "$new_config"
+  # The backend owns CORS (it knows its real allowed headers/methods) and
+  # answers its own preflights whenever it has at least one healthy server.
+  # Only when the backend has none do we short-circuit here, so preflight
+  # still resolves deterministically instead of failing behind a dead ASG.
+  # Allow-Headers still comes from this route's own corsAllowedHeaders (set
+  # above), so the fallback never grants headers this service doesn't expect.
+  printf '  acl backend_down_%d nbsrv(route_%d) eq 0\n' "$index" "$index" >> "$new_config"
+  printf '  http-request return status 204 hdr Access-Control-Allow-Origin %%[var(txn.cors_origin)] hdr Access-Control-Allow-Credentials true hdr Access-Control-Allow-Methods "GET,POST,PUT,PATCH,DELETE,OPTIONS" hdr Access-Control-Allow-Headers %%[var(txn.cors_headers)] hdr Access-Control-Max-Age 86400 hdr Vary Origin if route_%d METH_OPTIONS backend_down_%d { var(txn.cors_origin) -m found }\n' "$index" "$index" >> "$new_config"
 done
 # HAProxy evaluates http-request rules before use_backend regardless of their
 # textual order and warns when the file suggests otherwise. Emit every request
@@ -329,7 +341,7 @@ cat >> "$new_config" <<'HAPROXY'
   http-after-response set-header Access-Control-Allow-Origin %[var(txn.cors_origin)] if { var(txn.cors_origin) -m found } { status 503 }
   http-after-response set-header Access-Control-Allow-Credentials true if { var(txn.cors_credentials) -m found } { status 503 }
   http-after-response set-header Access-Control-Allow-Methods "GET,POST,PUT,PATCH,DELETE,OPTIONS" if { var(txn.cors_origin) -m found } { status 503 }
-  http-after-response set-header Access-Control-Allow-Headers "Origin,Content-Type,Authorization,X-Request-ID,Idempotency-Key,X-Billing-Mode" if { var(txn.cors_origin) -m found } { status 503 }
+  http-after-response set-header Access-Control-Allow-Headers %[var(txn.cors_headers)] if { var(txn.cors_origin) -m found } { status 503 }
   http-after-response set-header Vary Origin if { var(txn.cors_origin) -m found } { status 503 }
 HAPROXY
 
