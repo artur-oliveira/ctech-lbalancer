@@ -184,6 +184,12 @@ resource "aws_autoscaling_group" "this" {
         launch_template_id = aws_launch_template.this.id
         version            = aws_launch_template.this.latest_version
       }
+      override {
+        instance_type = "t4g.nano"
+      }
+      override {
+        instance_type = "t4g.micro"
+      }
     }
     instances_distribution {
       spot_allocation_strategy                 = "price-capacity-optimized"
