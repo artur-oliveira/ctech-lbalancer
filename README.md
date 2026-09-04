@@ -16,8 +16,8 @@ HAProxy is built from the official source tarball as version **3.4.3 LTS** and
 verified against its pinned SHA-256. The branch is supported through 2031-Q2.
 GitHub Actions compiles the Alpine ARM64 binary in a pinned Alpine Docker build;
 the instance only downloads the verified artifact. The instance starts as
-`t4g.nano`; test `INSTANCE_TYPE=t4g.nano` only after observing memory and
-CPU-credit headroom. It has no public IPv4 address and uses T4g Standard credits.
+`t4g.nano`; `t4g.nano` and `t4g.micro` are supported sizes. It has no public
+IPv4 address and uses T4g Standard credits.
 
 ## Why HAProxy
 

@@ -6,14 +6,15 @@ resource "aws_ssm_parameter" "route" {
   type     = "String"
   tier     = "Standard"
   value = jsonencode({
-    hostname         = each.value.hostname
-    internalHostname = each.value.internal_hostname
-    corsOrigin       = each.value.cors_origin
-    asg              = each.value.asg
-    port             = each.value.port
-    healthPath       = each.value.health_path
-    healthyStatuses  = each.value.healthy_statuses
-    autoHeal         = each.value.auto_heal
+    hostname           = each.value.hostname
+    internalHostname   = each.value.internal_hostname
+    corsOrigin         = each.value.cors_origin
+    corsAllowedHeaders = each.value.cors_allowed_headers
+    asg                = each.value.asg
+    port               = each.value.port
+    healthPath         = each.value.health_path
+    healthyStatuses    = each.value.healthy_statuses
+    autoHeal           = each.value.auto_heal
   })
 }
 

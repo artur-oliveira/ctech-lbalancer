@@ -42,6 +42,13 @@ locals {
     "https://${local.domain_for_env["poker"]}",
   ]
 
+  # CORS headers every service accepts. Routes append service-specific
+  # headers on top (e.g. dfe's Dfe-Organization-Pk, billing's X-Billing-Mode)
+  # instead of every route sharing one hardcoded allowlist.
+  cors_allowed_headers_base = [
+    "Origin", "Content-Type", "Authorization", "X-Request-ID", "Idempotency-Key",
+  ]
+
   internal_lbalancer_domain = "lbalancer.${local.private_zone_name}"
 
   # internalServiceDomain(env, prefix)
@@ -52,56 +59,61 @@ locals {
   # Port of defaultRoutes(environment) in constants.ts.
   default_routes = {
     account = {
-      hostname          = local.domain_for_env["accounts-api"]
-      internal_hostname = local.internal_service_domain["accounts"]
+      hostname             = local.domain_for_env["accounts-api"]
+      internal_hostname    = local.internal_service_domain["accounts"]
       # /token is called cross-origin by every existing SPA; allowlist them
       # by name rather than reflecting any Origin.
-      cors_origin      = local.spa_origins
-      asg              = "${var.environment}-ctech-account"
-      port             = 8080
-      health_path      = "/v1.0/health-check"
-      healthy_statuses = [200]
-      auto_heal        = true
+      cors_origin          = local.spa_origins
+      cors_allowed_headers = local.cors_allowed_headers_base
+      asg                  = "${var.environment}-ctech-account"
+      port                 = 8080
+      health_path          = "/v1.0/health-check"
+      healthy_statuses     = [200]
+      auto_heal            = true
     }
     dfe = {
-      hostname          = local.domain_for_env["dfe-api"]
-      internal_hostname = local.internal_service_domain["dfe"]
-      cors_origin       = "https://${local.domain_for_env["dfe"]}"
-      asg               = "${var.environment}-ctech-dfe"
-      port              = 8080
-      health_path       = "/v1.0/health-check"
-      healthy_statuses  = [200]
-      auto_heal         = true
+      hostname             = local.domain_for_env["dfe-api"]
+      internal_hostname    = local.internal_service_domain["dfe"]
+      cors_origin          = "https://${local.domain_for_env["dfe"]}"
+      cors_allowed_headers = concat(local.cors_allowed_headers_base, ["Dfe-Organization-Pk"])
+      asg                  = "${var.environment}-ctech-dfe"
+      port                 = 8080
+      health_path          = "/v1.0/health-check"
+      healthy_statuses     = [200]
+      auto_heal            = true
     }
     wallet = {
-      hostname          = local.domain_for_env["wallet-api"]
-      internal_hostname = local.internal_service_domain["wallet"]
-      cors_origin       = "https://${local.domain_for_env["wallet"]}"
-      asg               = "${var.environment}-ctech-wallet"
-      port              = 8080
-      health_path       = "/v1.0/health-check"
-      healthy_statuses  = [200]
-      auto_heal         = true
+      hostname             = local.domain_for_env["wallet-api"]
+      internal_hostname    = local.internal_service_domain["wallet"]
+      cors_origin          = "https://${local.domain_for_env["wallet"]}"
+      cors_allowed_headers = local.cors_allowed_headers_base
+      asg                  = "${var.environment}-ctech-wallet"
+      port                 = 8080
+      health_path          = "/v1.0/health-check"
+      healthy_statuses     = [200]
+      auto_heal            = true
     }
     poker = {
-      hostname          = local.domain_for_env["poker-api"]
-      internal_hostname = local.internal_service_domain["poker"]
-      cors_origin       = "https://${local.domain_for_env["poker"]}"
-      asg               = "${var.environment}-ctech-poker"
-      port              = 8080
-      health_path       = "/v1.0/health-check"
-      healthy_statuses  = [200]
-      auto_heal         = true
+      hostname             = local.domain_for_env["poker-api"]
+      internal_hostname    = local.internal_service_domain["poker"]
+      cors_origin          = "https://${local.domain_for_env["poker"]}"
+      cors_allowed_headers = local.cors_allowed_headers_base
+      asg                  = "${var.environment}-ctech-poker"
+      port                 = 8080
+      health_path          = "/v1.0/health-check"
+      healthy_statuses     = [200]
+      auto_heal            = true
     }
     billing = {
-      hostname          = local.domain_for_env["billing-api"]
-      internal_hostname = local.internal_service_domain["billing"]
-      cors_origin       = "https://${local.domain_for_env["billing"]}"
-      asg               = "${var.environment}-ctech-billing"
-      port              = 8080
-      health_path       = "/v1.0/health-check"
-      healthy_statuses  = [200]
-      auto_heal         = true
+      hostname             = local.domain_for_env["billing-api"]
+      internal_hostname    = local.internal_service_domain["billing"]
+      cors_origin          = "https://${local.domain_for_env["billing"]}"
+      cors_allowed_headers = concat(local.cors_allowed_headers_base, ["X-Billing-Mode"])
+      asg                  = "${var.environment}-ctech-billing"
+      port                 = 8080
+      health_path          = "/v1.0/health-check"
+      healthy_statuses     = [200]
+      auto_heal            = true
     }
   }
 
