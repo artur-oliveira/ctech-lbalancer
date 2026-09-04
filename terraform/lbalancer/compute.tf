@@ -167,7 +167,7 @@ resource "aws_launch_template" "this" {
 
 resource "aws_autoscaling_group" "this" {
   name                = "${var.environment}-ctech-lbalancer${var.resource_suffix}"
-  vpc_zone_identifier = data.aws_subnets.public.ids
+  vpc_zone_identifier = local.t4g_public_subnet_ids
   min_size            = 1
   # +1 over min_size: gives CapacityRebalance headroom to launch the
   # replacement before terminating the spot-interrupted instance instead of
@@ -223,6 +223,20 @@ data "aws_subnets" "public" {
   tags = {
     "aws-cdk:subnet-type" = "Public"
   }
+}
+
+# Keep the VPC's public subnet in us-east-1e available to other workloads, but
+# exclude it from this t4g ASG because that instance family is unavailable there.
+data "aws_subnet" "public" {
+  for_each = toset(data.aws_subnets.public.ids)
+  id       = each.value
+}
+
+locals {
+  t4g_public_subnet_ids = [
+    for subnet in data.aws_subnet.public : subnet.id
+    if subnet.availability_zone != "us-east-1e"
+  ]
 }
 
 # The shared bootstrap scripts published by ctech-cdk's Ec2ScriptsStack. The
