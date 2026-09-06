@@ -215,6 +215,25 @@ done
 LOOP
 chmod 0750 /opt/ctech-lbalancer/reconcile-loop.sh
 
+cat > /etc/init.d/ctech-lbalancer-spot-drain <<'INITD'
+#!/sbin/openrc-run
+description="Poll IMDS for the spot interruption notice and trigger a graceful HAProxy stop"
+command="/opt/ctech-lbalancer/spot-drain.sh"
+command_background="yes"
+pidfile="/run/ctech-lbalancer-spot-drain.pid"
+supervisor="supervise-daemon"
+respawn_delay=5
+respawn_max=0
+output_log="/var/log/ctech-lbalancer-reconcile.log"
+error_log="/var/log/ctech-lbalancer-reconcile.log"
+
+depend() {
+	need net
+	after ctech-lbalancer-reconcile
+}
+INITD
+chmod 0755 /etc/init.d/ctech-lbalancer-spot-drain
+
 rc-update add nftables default
 rc-update add rsyslog default
 rc-service rsyslog restart
@@ -225,6 +244,8 @@ rc-service ctech-cloudflare-ips start
 rc-update add ctech-lbalancer-reconcile default
 rc-service ctech-lbalancer-reconcile start
 /opt/ctech-lbalancer/reconcile.sh || true
+rc-update add ctech-lbalancer-spot-drain default
+rc-service ctech-lbalancer-spot-drain start
 if [ '${enable_cloudwatch_logs}' = 'true' ]; then
   # Readiness and the Cloudflare AAAA update have priority; logs-tail catches
   # up from byte zero after the first reconciliation has been started.

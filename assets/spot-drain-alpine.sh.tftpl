@@ -1,0 +1,45 @@
+#!/bin/bash
+# Deliberately not `set -e`: this is an infinite poll loop supervised by
+# supervise-daemon (see the ctech-lbalancer-spot-drain OpenRC service in
+# bootstrap-alpine.sh.tftpl) — one failed curl against IMDS must only skip
+# this iteration, never exit the loop.
+set -uo pipefail
+
+STATE_DIR=/var/lib/haproxy/ctech-state
+DRAIN_MARKER="$STATE_DIR/spot-drain-triggered"
+mkdir -p "$STATE_DIR"
+
+while true; do
+  # Fetched fresh every iteration (same pattern as reconcile.sh's own IMDS
+  # calls) rather than cached: one extra loopback curl every 5s is free next
+  # to a token-expiry edge case in a script whose only job is not to miss the
+  # ~2-minute interruption warning.
+  imds_token=$(curl --silent --fail --max-time 2 -X PUT \
+    -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' \
+    http://169.254.169.254/latest/api/token || true)
+  if [ -n "$imds_token" ] && [ ! -e "$DRAIN_MARKER" ]; then
+    status=$(curl --silent --output /dev/null --max-time 2 \
+      --write-out '%%{http_code}' \
+      -H "X-aws-ec2-metadata-token: $${imds_token}" \
+      http://169.254.169.254/latest/meta-data/spot/instance-action || echo 000)
+    # Any non-404 (and non-000 connection failure) response means a
+    # termination has been scheduled: the instance-action document only
+    # exists once AWS has decided to reclaim this spot instance.
+    if [ "$status" != '404' ] && [ "$status" != '000' ]; then
+      touch "$DRAIN_MARKER"
+      echo "Spot interruption notice received (HTTP $${status}); triggering HAProxy graceful stop (hard-stop-after ${spot_drain_timeout_seconds}s)"
+      if [ -f /run/haproxy.pid ]; then
+        # SIGUSR1 to the HAProxy master (HAPROXY_MWORKER=1, per the haproxy
+        # OpenRC service) is a soft stop: stop accepting new connections, let
+        # in-flight ones finish, bounded by this same template's
+        # `hard-stop-after` in haproxy.cfg's global block. No second admin
+        # channel needed — reconcile.sh already talks to the same master via
+        # the admin socket only for config reloads (SIGUSR2), not stops.
+        kill -USR1 "$(cat /run/haproxy.pid)" 2>/dev/null || true
+      else
+        echo 'HAProxy pidfile missing; cannot signal graceful stop' >&2
+      fi
+    fi
+  fi
+  sleep 5
+done

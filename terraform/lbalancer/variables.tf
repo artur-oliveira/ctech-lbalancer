@@ -74,6 +74,16 @@ variable "manage_routes" {
   default = true
 }
 
+variable "spot_drain_timeout_seconds" {
+  type        = number
+  default     = 100
+  description = "hard-stop-after bound on HAProxy's graceful spot-interruption drain. AWS gives roughly 2 minutes of warning before reclaiming a spot instance; this stays comfortably under that so a hard stop still happens before the instance is reclaimed."
+  validation {
+    condition     = var.spot_drain_timeout_seconds > 0 && var.spot_drain_timeout_seconds <= 110
+    error_message = "spot_drain_timeout_seconds must be a positive number of seconds, at most 110 (the ~2 minute spot warning minus a safety margin)."
+  }
+}
+
 variable "os_family" {
   type    = string
   default = "alpine"

@@ -237,12 +237,31 @@ Persistent=true
 WantedBy=timers.target
 UNIT
 
+cat > /etc/systemd/system/ctech-lbalancer-spot-drain.service <<'UNIT'
+[Unit]
+Description=Poll IMDS for the spot interruption notice and trigger a graceful HAProxy stop
+After=network-online.target ctech-lbalancer-reconcile.timer
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/opt/ctech-lbalancer/spot-drain.sh
+Restart=always
+RestartSec=2s
+StandardOutput=append:/var/log/ctech-lbalancer-reconcile.log
+StandardError=append:/var/log/ctech-lbalancer-reconcile.log
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
 systemctl daemon-reload
 /opt/ctech-lbalancer/refresh-cloudflare-ips.sh
 systemctl enable nftables rsyslog
 systemctl restart rsyslog
 systemctl enable --now ctech-cloudflare-ips.timer ctech-lbalancer-reconcile.timer
 /opt/ctech-lbalancer/reconcile.sh || true
+systemctl enable --now ctech-lbalancer-spot-drain.service
 if [ '${enable_cloudwatch_logs}' = 'true' ]; then
   ctech_run setup-cloudwatch-agent.sh /tmp/cwagent.json
 fi

@@ -140,6 +140,7 @@ On the default Alpine/OpenRC instance (`os_family = "alpine"`):
 ```bash
 sudo rc-service haproxy status
 sudo rc-service ctech-lbalancer-reconcile status
+sudo rc-service ctech-lbalancer-spot-drain status
 sudo tail -n 100 /var/log/ctech-lbalancer-reconcile.log
 sudo /usr/local/sbin/haproxy -c -f /etc/haproxy/haproxy.cfg
 sudo nft list table inet ctech_edge
@@ -148,7 +149,7 @@ sudo nft list table inet ctech_edge
 On a legacy AL2023 instance (`os_family = "al2023"`), use systemd instead:
 
 ```bash
-sudo systemctl status haproxy ctech-lbalancer-reconcile.timer
+sudo systemctl status haproxy ctech-lbalancer-reconcile.timer ctech-lbalancer-spot-drain.service
 sudo journalctl -u ctech-lbalancer-reconcile.service -n 100 --no-pager
 sudo /usr/local/sbin/haproxy -c -f /etc/haproxy/haproxy.cfg
 sudo nft list table inet ctech_edge
@@ -297,6 +298,19 @@ Migration sequence:
 ## Failure modes to keep in mind
 
 - **LB is a single point in time:** ASG recovery is automatic, not instant.
+- **Spot interruption drain:** `ctech-lbalancer-spot-drain` polls
+  `http://169.254.169.254/latest/meta-data/spot/instance-action` every 5
+  seconds and sends `SIGUSR1` to the HAProxy master on the first non-404
+  response, which stops it from accepting new connections while letting
+  in-flight ones (including up-to-65s HTTP requests and hour-long poker
+  WebSocket tunnels) finish. `hard-stop-after` in `haproxy.cfg`
+  (`spot_drain_timeout_seconds`, default 100s) forces a hard stop before the
+  ~2-minute spot warning elapses. This is a single-instance drain, not a
+  rotation-removal mechanism: `capacity_rebalance = true` (`compute.tf`)
+  already launches the replacement instance before the interrupted one
+  terminates, and the reconciler's existing DNS/target-discovery flow points
+  traffic at it as soon as it is ready — see the two-node-HA note in
+  [internal-m2m.md](internal-m2m.md).
 - **Cloudflare dependency:** an outage or accidental DNS de-proxy makes the
   public service unavailable by design; direct browsers cannot trust Origin CA.
 - **Certificate expiry:** Origin CA can be long lived, but inventory its expiry;

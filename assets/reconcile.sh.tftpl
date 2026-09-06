@@ -251,6 +251,11 @@ global
   stats socket /run/haproxy/admin.sock mode 660 level admin
   maxconn 2048
   ssl-default-bind-options ssl-min-ver TLSv1.2 no-tls-tickets
+  # Bounds spot-drain.sh's graceful stop (SIGUSR1): once a soft stop begins,
+  # force remaining connections closed after this long instead of waiting
+  # indefinitely for stubborn long-lived tunnels past the ~2-minute spot
+  # interruption warning.
+  hard-stop-after ${spot_drain_timeout_seconds}s
 
 defaults
   log global
