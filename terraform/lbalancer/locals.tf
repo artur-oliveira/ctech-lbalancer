@@ -59,8 +59,8 @@ locals {
   # Port of defaultRoutes(environment) in constants.ts.
   default_routes = {
     account = {
-      hostname             = local.domain_for_env["accounts-api"]
-      internal_hostname    = local.internal_service_domain["accounts"]
+      hostname          = local.domain_for_env["accounts-api"]
+      internal_hostname = local.internal_service_domain["accounts"]
       # /token is called cross-origin by every existing SPA; allowlist them
       # by name rather than reflecting any Origin.
       cors_origin          = local.spa_origins
