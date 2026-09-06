@@ -133,6 +133,21 @@ building HAProxy, leaving Session Manager available if a later step fails.
 
 ```bash
 aws ssm start-session --target INSTANCE_ID
+```
+
+On the default Alpine/OpenRC instance (`os_family = "alpine"`):
+
+```bash
+sudo rc-service haproxy status
+sudo rc-service ctech-lbalancer-reconcile status
+sudo tail -n 100 /var/log/ctech-lbalancer-reconcile.log
+sudo /usr/local/sbin/haproxy -c -f /etc/haproxy/haproxy.cfg
+sudo nft list table inet ctech_edge
+```
+
+On a legacy AL2023 instance (`os_family = "al2023"`), use systemd instead:
+
+```bash
 sudo systemctl status haproxy ctech-lbalancer-reconcile.timer
 sudo journalctl -u ctech-lbalancer-reconcile.service -n 100 --no-pager
 sudo /usr/local/sbin/haproxy -c -f /etc/haproxy/haproxy.cfg

@@ -164,11 +164,14 @@ aws autoscaling describe-instance-refreshes \
   --query 'InstanceRefreshes[0].{Status:Status,Percentage:PercentageComplete,Reason:StatusReason}'
 ```
 
-Because this ASG has one instance, this refresh causes a short public and
-private outage while the replacement boots. Do not increase desired capacity
-ad hoc: this stack has `max_size = 1` in `terraform/lbalancer/compute.tf`, and
-an unmanaged change would create drift. A planned two-node HA design should be
-implemented in Terraform first.
+Because this ASG normally runs one instance, this refresh still causes a short
+public and private outage while the replacement boots. `terraform/lbalancer/compute.tf`
+sets `min_size = 1` and `max_size = 2` so `capacity_rebalance` has headroom to
+launch a replacement before a spot-interrupted instance terminates, but that
+headroom is transient capacity, not a standing two-node HA design — steady
+state is still a single active instance. Do not increase desired capacity ad
+hoc beyond what capacity rebalancing needs; a planned two-node HA design should
+be implemented in Terraform first.
 
 ## 5. Validate
 
@@ -182,6 +185,19 @@ aws ssm start-session --target "$INSTANCE_ID"
 ```
 
 Inside the session:
+
+On the default Alpine/OpenRC instance (`os_family = "alpine"`):
+
+```bash
+sudo rc-service haproxy status
+sudo rc-service ctech-lbalancer-reconcile status
+sudo tail -n 100 /var/log/ctech-lbalancer-reconcile.log
+sudo /usr/local/sbin/haproxy -c -f /etc/haproxy/haproxy.cfg
+sudo grep -E '^frontend |^  bind ' /etc/haproxy/haproxy.cfg
+sudo nft list table inet ctech_edge
+```
+
+On a legacy AL2023 instance (`os_family = "al2023"`), use systemd instead:
 
 ```bash
 sudo systemctl status haproxy ctech-lbalancer-reconcile.timer --no-pager

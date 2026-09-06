@@ -123,7 +123,17 @@ Repeat with `*-dev.aoctech.app` and `*-stage.aoctech.app` if those environments
 are deployed. An application-specific healthy response such as 207 is also
 valid where the route declares it.
 
-Then inspect the load balancer through SSM:
+Then inspect the load balancer through SSM. On the default Alpine/OpenRC
+instance (`os_family = "alpine"`):
+
+```bash
+sudo rc-service haproxy status
+sudo rc-service ctech-lbalancer-reconcile status
+sudo tail -n 100 /var/log/ctech-lbalancer-reconcile.log
+sudo /usr/local/sbin/haproxy -c -f /etc/haproxy/haproxy.cfg
+```
+
+On a legacy AL2023 instance (`os_family = "al2023"`), use systemd instead:
 
 ```bash
 sudo systemctl status haproxy ctech-lbalancer-reconcile.timer
@@ -205,6 +215,19 @@ the new client certificate for every proxied `aoctech.app` origin. Prepare
    seconds and reloads HAProxy when the trust bundle changes.
 4. On each load balancer, wait for the reconciliation, validate the HAProxy
    configuration, and confirm both CA subjects are installed:
+
+   On the default Alpine/OpenRC instance (`os_family = "alpine"`):
+
+   ```bash
+   sudo rc-service haproxy status
+   sudo rc-service ctech-lbalancer-reconcile status
+   sudo tail -n 50 /var/log/ctech-lbalancer-reconcile.log
+   sudo /usr/local/sbin/haproxy -c -f /etc/haproxy/haproxy.cfg
+   sudo openssl crl2pkcs7 -nocrl -certfile /etc/haproxy/tls/aop-ca.pem \
+     | sudo openssl pkcs7 -print_certs -noout
+   ```
+
+   On a legacy AL2023 instance (`os_family = "al2023"`), use systemd instead:
 
    ```bash
    sudo systemctl status haproxy ctech-lbalancer-reconcile.timer

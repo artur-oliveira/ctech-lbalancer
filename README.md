@@ -151,7 +151,15 @@ terraform apply -var-file=environments/prod.tfvars -var='instance_type=t4g.nano'
 
 ## Register a future service
 
-No central CDK change is required. Its service CDK should create one Standard
+No central CDK change is required. `ctech-cdk` (`@aoctech/cdk`) already
+exports a `HaproxyEc2Service` construct (`lib/haproxy-ec2-service.ts`) that
+creates this route parameter and the private CNAME below for the common
+case — prefer it over hand-rolling the raw `ssm.StringParameter` shown here.
+As of this writing its `HaproxyRouteRegistrationProps` does not yet expose
+`corsOrigin`/`corsAllowedHeaders`, so a route that needs CORS still has to
+create its own SSM parameter with the full shape below (or that construct
+needs the CORS fields added first — check for drift before assuming it is
+current). Whichever path is used, the service CDK should create one Standard
 SSM parameter containing this shape:
 
 ```json
