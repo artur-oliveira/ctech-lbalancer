@@ -38,6 +38,7 @@ locals {
     ec2_scripts_version                 = data.aws_ssm_parameter.ec2_scripts_version.value
     ec2_scripts_alpine_bucket           = var.os_family == "alpine" ? data.aws_ssm_parameter.ec2_scripts_alpine_bucket[0].value : ""
     ec2_scripts_alpine_version          = var.os_family == "alpine" ? data.aws_ssm_parameter.ec2_scripts_alpine_version[0].value : ""
+    spot_drain_timeout_seconds          = tostring(var.spot_drain_timeout_seconds)
   }
 
   # local.user_data below only ever references these three locals by name —
@@ -51,10 +52,17 @@ locals {
 
   bootstrap_sh = var.os_family == "alpine" ? templatefile("${path.module}/../../assets/bootstrap-alpine.sh.tftpl", local.userdata_template_vars) : templatefile("${path.module}/../../assets/bootstrap.sh.tftpl", local.userdata_template_vars)
 
+  # Polls IMDS for the spot-instance-action interruption notice and triggers
+  # HAProxy's own graceful stop (SIGUSR1 to the master, bounded by the
+  # hard-stop-after this same template sets in haproxy.cfg's global block) —
+  # same os_family branch as the other runtime scripts.
+  spot_drain_sh = var.os_family == "alpine" ? templatefile("${path.module}/../../assets/spot-drain-alpine.sh.tftpl", local.userdata_template_vars) : templatefile("${path.module}/../../assets/spot-drain.sh.tftpl", local.userdata_template_vars)
+
   runtime_scripts = {
     "reconcile.sh"              = local.reconcile_sh
     "refresh-cloudflare-ips.sh" = local.refresh_cloudflare_ips_sh
     "bootstrap.sh"              = local.bootstrap_sh
+    "spot-drain.sh"             = local.spot_drain_sh
   }
 
   # Keep user data far below EC2's 16 KiB decoded limit. The rendered scripts
