@@ -251,11 +251,15 @@ global
   stats socket /run/haproxy/admin.sock mode 660 level admin
   maxconn 2048
   ssl-default-bind-options ssl-min-ver TLSv1.2 no-tls-tickets
-  # Bounds spot-drain.sh's graceful stop (SIGUSR1): once a soft stop begins,
-  # force remaining connections closed after this long instead of waiting
-  # indefinitely for stubborn long-lived tunnels past the ~2-minute spot
-  # interruption warning.
-  hard-stop-after ${spot_drain_timeout_seconds}s
+  # Deliberately no `hard-stop-after` here: this file is rewritten and
+  # reloaded on every backend-list change (any route's targets churning, not
+  # just poker-api's), and HAProxy applies `hard-stop-after` to *any* soft
+  # stop, including the outgoing generation's drain on an ordinary reload —
+  # not only the spot-interruption stop it's meant to bound. Baked into this
+  # static config, an unrelated backend flapping (e.g. wallet) forced every
+  # long-lived poker WebSocket tunnel closed within ~100s of a routine
+  # reload. spot-drain.sh sets it on the admin socket at the moment it
+  # actually needs it instead.
 
 defaults
   log global
