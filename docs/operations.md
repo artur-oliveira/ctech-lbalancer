@@ -300,12 +300,21 @@ Migration sequence:
 - **LB is a single point in time:** ASG recovery is automatic, not instant.
 - **Spot interruption drain:** `ctech-lbalancer-spot-drain` polls
   `http://169.254.169.254/latest/meta-data/spot/instance-action` every 5
-  seconds and sends `SIGUSR1` to the HAProxy master on the first non-404
-  response, which stops it from accepting new connections while letting
-  in-flight ones (including up-to-65s HTTP requests and hour-long poker
-  WebSocket tunnels) finish. `hard-stop-after` in `haproxy.cfg`
-  (`spot_drain_timeout_seconds`, default 100s) forces a hard stop before the
-  ~2-minute spot warning elapses. This is a single-instance drain, not a
+  seconds and, on the first non-404 response, sets `hard-stop-after
+  ${spot_drain_timeout_seconds}s` (default 100s) on the running HAProxy
+  process via its admin socket (`socat`), then sends `SIGUSR1` to the master,
+  which stops it from accepting new connections while letting in-flight ones
+  (including up-to-65s HTTP requests and hour-long poker WebSocket tunnels)
+  finish — bounded by the value just set, so a hard stop still happens before
+  the ~2-minute spot warning elapses. `hard-stop-after` is deliberately **not**
+  in the static `haproxy.cfg` reconcile.sh generates: HAProxy applies it to
+  any soft stop, including the outgoing generation's drain on an *ordinary*
+  reload — reconcile.sh reloads on every backend-list change, on any route,
+  so a static value there would cap every live poker WebSocket tunnel at
+  ~100s past a routine reload triggered by, say, the wallet backend flapping
+  (confirmed live, 2026-09-22). Setting it only at the moment of an actual
+  spot drain keeps ordinary reloads unbounded, as HAProxy's seamless-reload
+  design intends. This is a single-instance drain, not a
   rotation-removal mechanism: `capacity_rebalance = true` (`compute.tf`)
   already launches the replacement instance before the interrupted one
   terminates, and the reconciler's existing DNS/target-discovery flow points

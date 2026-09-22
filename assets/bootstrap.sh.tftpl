@@ -18,7 +18,9 @@ ctech_run setup-swap.sh 512
 
 # AL2023 Minimal already provides the curl command through curl-minimal. Asking
 # DNF for the full curl package conflicts with curl-minimal and aborts cloud-init.
-RUNTIME_PACKAGES=(jq nftables rsyslog libxcrypt openssl-libs pcre2 zlib)
+# socat: spot-drain.sh's only way to reach the admin socket (`stats socket
+# /run/haproxy/admin.sock`) — there is no other AF_UNIX-capable tool here.
+RUNTIME_PACKAGES=(jq nftables rsyslog libxcrypt openssl-libs pcre2 zlib socat)
 if [ '${enable_ssm_agent}' = 'true' ]; then
   RUNTIME_PACKAGES+=(amazon-ssm-agent)
 fi

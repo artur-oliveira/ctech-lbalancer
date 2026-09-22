@@ -29,7 +29,9 @@ fi
 # unlike AL2023's libs-only openssl-libs). pcre2/zlib are HAProxy's runtime
 # link targets, confirmed working live via `haproxy -vv` after this exact
 # build. libxcrypt has no Alpine/musl equivalent and nothing here calls it.
-apk add --no-cache jq nftables rsyslog logrotate openssl pcre2 zlib
+# socat: spot-drain.sh's only way to reach the admin socket (`stats socket
+# /run/haproxy/admin.sock`) — busybox's built-in nc has no AF_UNIX support.
+apk add --no-cache jq nftables rsyslog logrotate openssl pcre2 zlib socat
 
 if [ '${enable_ssm_agent}' = 'true' ]; then
   cat > /etc/amazon/ssm/amazon-ssm-agent.json <<'SSM'

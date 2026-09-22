@@ -29,12 +29,20 @@ while true; do
       touch "$DRAIN_MARKER"
       echo "Spot interruption notice received (HTTP $${status}); triggering HAProxy graceful stop (hard-stop-after ${spot_drain_timeout_seconds}s)"
       if [ -f /run/haproxy.pid ]; then
+        # Set the hard-stop bound on the running process right before
+        # signalling the stop, rather than baking it into haproxy.cfg: the
+        # config is rewritten and reloaded on every backend-list change (any
+        # route, not just this one), and a static `hard-stop-after` would cap
+        # every ordinary reload's outgoing generation the same way it caps
+        # this actual emergency stop — which is what forced live poker
+        # WebSocket tunnels closed on unrelated backend churn before this
+        # fix. `echo | socat` writes one admin-socket command and exits.
+        echo "set hard-stop-after ${spot_drain_timeout_seconds}s" | \
+          socat stdio /run/haproxy/admin.sock 2>/dev/null || \
+          echo 'Failed to set hard-stop-after on the admin socket; proceeding with the soft stop anyway' >&2
         # SIGUSR1 to the HAProxy master (HAPROXY_MWORKER=1, per the haproxy
         # OpenRC service) is a soft stop: stop accepting new connections, let
-        # in-flight ones finish, bounded by this same template's
-        # `hard-stop-after` in haproxy.cfg's global block. No second admin
-        # channel needed — reconcile.sh already talks to the same master via
-        # the admin socket only for config reloads (SIGUSR2), not stops.
+        # in-flight ones finish, bounded by the hard-stop-after just set above.
         kill -USR1 "$(cat /run/haproxy.pid)" 2>/dev/null || true
       else
         echo 'HAProxy pidfile missing; cannot signal graceful stop' >&2
