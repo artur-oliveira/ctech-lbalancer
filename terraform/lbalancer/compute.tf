@@ -178,31 +178,23 @@ resource "aws_autoscaling_group" "this" {
   name                = "${var.environment}-ctech-lbalancer${var.resource_suffix}"
   vpc_zone_identifier = local.t4g_public_subnet_ids
   min_size            = 1
-  # +1 over min_size: gives CapacityRebalance headroom to launch the
-  # replacement before terminating the spot-interrupted instance instead of
-  # waiting for it to go down first.
+  # Allow replacement headroom.
   max_size                  = 2
   health_check_type         = "EC2"
   health_check_grace_period = 600
-  capacity_rebalance        = true
+  capacity_rebalance        = false
+  instance_refresh {
+    strategy = "Rolling"
+    preferences {
+      min_healthy_percentage = 100
+      max_healthy_percentage = 200
+      instance_warmup        = 600
+    }
+  }
 
-  mixed_instances_policy {
-    launch_template {
-      launch_template_specification {
-        launch_template_id = aws_launch_template.this.id
-        version            = aws_launch_template.this.latest_version
-      }
-      override {
-        instance_type = "t4g.nano"
-      }
-      override {
-        instance_type = "t4g.micro"
-      }
-    }
-    instances_distribution {
-      spot_allocation_strategy                 = "price-capacity-optimized"
-      on_demand_percentage_above_base_capacity = 0
-    }
+  launch_template {
+    id      = aws_launch_template.this.id
+    version = aws_launch_template.this.latest_version
   }
 
   tag {

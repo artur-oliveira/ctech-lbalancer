@@ -1,3 +1,7 @@
+## EC2 capacity (2026-10-01)
+
+HAProxy uses only `t4g.nano` On-Demand capacity through a direct ASG launch template. Spot, capacity rebalance and micro fallback are disabled. Instance replacement may temporarily require extra capacity. EC2 Instance Savings Plans are purchased separately and apply automatically to eligible usage in the selected family and region. Historical Spot notes below are superseded.
+
 # ctech-lbalancer
 
 A dual-entrypoint HAProxy intended to replace the shared AWS Application Load
