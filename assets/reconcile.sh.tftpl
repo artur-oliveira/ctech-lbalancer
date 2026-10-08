@@ -271,7 +271,10 @@ defaults
   timeout client 65s
   timeout server 65s
   timeout http-request 10s
-  timeout http-keep-alive 15s
+  # Longer than Cloudflare's idle origin-connection reuse: at ~6 new conns/min
+  # the pooled connections sit idle for >15s, so a short value made HAProxy close
+  # them just as Cloudflare reused one (CR-- in the access log, probe timeouts).
+  timeout http-keep-alive 120s
   timeout tunnel 1h
   retries 2
   http-error status 503 content-type application/problem+json string '{"type":"about:blank","title":"Service Unavailable","status":503,"detail":"No backend server is currently available to handle this request."}'
