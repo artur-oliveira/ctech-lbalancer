@@ -108,7 +108,7 @@ locals {
       hostname             = local.domain_for_env["billing-api"]
       internal_hostname    = local.internal_service_domain["billing"]
       cors_origin          = "https://${local.domain_for_env["billing"]}"
-      cors_allowed_headers = concat(local.cors_allowed_headers_base, ["X-Billing-Mode"])
+      cors_allowed_headers = concat(local.cors_allowed_headers_base, ["X-Billing-Mode", "X-Billing-Space", "Billing-Space"])
       asg                  = "${var.environment}-ctech-billing"
       port                 = 8080
       health_path          = "/v1.0/health-check"
