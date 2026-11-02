@@ -232,10 +232,8 @@ data "aws_subnets" "public" {
   }
 }
 
-# Pinned to one AZ on purpose: HAProxy, Valkey and every backend sit in
-# us-east-1b, and cross-AZ traffic costs $0.01/GB each way. Keep in sync with
-# PINNED_AZ in ctech-cdk/lib/constants.ts. Tradeoff: no AZ failover; recovery
-# is changing this value and applying. (us-east-1e has no t4g anyway.)
+# Pinned to a single AZ to avoid EC2 Inter-AZ data transfer charges. Keep in
+# sync with PINNED_AZ in ctech-cdk/lib/constants.ts. Tradeoff: no AZ failover.
 data "aws_subnet" "public" {
   for_each = toset(data.aws_subnets.public.ids)
   id       = each.value
