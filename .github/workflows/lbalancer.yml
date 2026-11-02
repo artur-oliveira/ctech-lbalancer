@@ -55,6 +55,9 @@ jobs:
           terraform -chdir=terraform/lbalancer init -backend=false -input=false
           terraform -chdir=terraform/lbalancer validate
 
+      - name: Reconcile KMS cache test
+        run: scripts/test-reconcile-kms-cache.sh
+
   apply:
     name: Apply
     runs-on: ubuntu-24.04-arm

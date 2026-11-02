@@ -12,9 +12,19 @@ CONFIG=/etc/haproxy/haproxy.cfg
 mkdir -p "$STATE_DIR"
 install -d -o root -g haproxy -m 0750 /etc/haproxy /etc/haproxy/tls
 
+# KMS policy: a SecureString is decrypted once per change, not once per 30s loop.
+# A no-decryption read returns the ciphertext without any KMS call and it changes
+# on rotation, so its hash keys a tmpfs (/run, RAM only) cache of the decrypted
+# value. Steady state is zero KMS requests; rotation is picked up on the next loop.
 parameter() {
-  aws ssm get-parameter --name "$1" --with-decryption \
-    --query 'Parameter.Value' --output text 2>/dev/null
+  local dir=/run/ctech-ssm cache ct h val
+  cache="$dir/$(printf %s "$1" | sha256sum | cut -d' ' -f1)"
+  ct=$(aws ssm get-parameter --name "$1" --query 'Parameter.Value' --output text 2>/dev/null) || return 1
+  h=$(printf %s "$ct" | sha256sum | cut -d' ' -f1)
+  if [ "$(head -n1 "$cache" 2>/dev/null)" = "$h" ]; then tail -n +2 "$cache"; return; fi
+  val=$(aws ssm get-parameter --name "$1" --with-decryption --query 'Parameter.Value' --output text 2>/dev/null) || return 1
+  ( umask 077; mkdir -p "$dir"; printf '%s\n%s' "$h" "$val" > "$cache.$$" && mv "$cache.$$" "$cache" ) 2>/dev/null || true
+  printf '%s' "$val"
 }
 
 publish_origin_ipv6() {

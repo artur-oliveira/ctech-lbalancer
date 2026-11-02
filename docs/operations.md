@@ -340,3 +340,19 @@ Migration sequence:
 - **Cross-AZ traffic:** a target in another AZ incurs regional data transfer.
 - **Bad health endpoint:** auto-heal will correctly but repeatedly replace an app
   whose health contract is wrong. Test the route with `autoHeal=false` first.
+
+## KMS policy (SecureString reads)
+
+The KMS bill must stay at ~0 (free tier is 20k requests/month). An SSM
+SecureString read with decryption is one KMS `Decrypt`, so a 30s loop that
+decrypts four parameters is ~350k requests/month. Rules:
+
+- Decrypt at boot and cache; a periodic loop never decrypts every cycle.
+- `parameter()` in both `reconcile*.sh.tftpl` (AL2023 and Alpine, keep in sync)
+  first reads the parameter **without** decryption (ciphertext, no KMS call),
+  hashes it, and decrypts only when the hash differs from the tmpfs cache in
+  `/run/ctech-ssm` (RAM only, 0600). Steady state is zero KMS requests;
+  a rotated certificate or key is picked up on the next 30s loop, same latency as before.
+- Route parameters (`.../lbalancer/routes/*`) are `String`, so they never touch KMS.
+- `scripts/test-reconcile-kms-cache.sh` (run in CI) asserts one decrypt per change.
+- DynamoDB uses the AWS-owned key and S3 uses SSE-S3 (this repo has neither with KMS).
