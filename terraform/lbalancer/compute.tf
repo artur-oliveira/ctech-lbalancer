@@ -174,6 +174,11 @@ resource "aws_launch_template" "this" {
   ]
 }
 
+# The launch template resolves /ctech/<env>/ami/alpine/arm64 on every apply, so an
+# apply after a new AMI is published replaces the instance through the rolling
+# instance_refresh below (surge to 200%, 600 s warmup: the old instance keeps
+# serving until the new one is warm and has republished the origin AAAA).
+# The AMI build workflow deregisters the previous AMI, so apply right after it.
 resource "aws_autoscaling_group" "this" {
   name                = "${var.environment}-ctech-lbalancer${var.resource_suffix}"
   vpc_zone_identifier = local.t4g_public_subnet_ids
